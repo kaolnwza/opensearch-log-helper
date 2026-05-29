@@ -67,6 +67,12 @@ body {
   min-width: 0;
 }
 
+.donate-support {
+  font-size: 10px;
+  color: #aaa;
+  margin-bottom: 2px;
+}
+
 .donate-bank {
   font-size: 11px;
   color: #90e0ef;
