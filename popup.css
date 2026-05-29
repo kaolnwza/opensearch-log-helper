@@ -75,29 +75,61 @@ body {
   text-overflow: ellipsis;
 }
 
+.donate-bank {
+  cursor: default;
+  position: relative;
+}
+
+.donate-bank::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  background: #44475a;
+  color: #f8f8f2;
+  font-size: 11px;
+  white-space: nowrap;
+  padding: 5px 9px;
+  border-radius: 5px;
+  border: 1px solid #6272a4;
+  box-shadow: 0 3px 10px rgba(0,0,0,.4);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 0.15s, transform 0.15s;
+  z-index: 999;
+}
+
+.donate-bank:hover::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 .donate-bank strong {
   color: #00b4d8;
   letter-spacing: 0.3px;
 }
 
+.donate-update {
+  font-size: 10px;
+  color: #555;
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .donate-gh {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 11px;
+  gap: 3px;
+  font-size: 10px;
   color: #90e0ef;
   text-decoration: none;
-  border: 1px solid #1a4a7a;
-  border-radius: 5px;
-  padding: 3px 8px;
-  flex-shrink: 0;
-  transition: background 0.15s, color 0.15s;
+  transition: color 0.15s;
 }
 
-.donate-gh:hover {
-  background: #0f3460;
-  color: #00b4d8;
-}
+.donate-gh:hover { color: #00b4d8; }
 
 .section-header {
   display: flex;
