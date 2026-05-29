@@ -23,6 +23,26 @@
     } catch { return []; }
   }
 
+  // ── Detect navigation / query changes ───────────────────────────────────
+  // OpenSearch Discover updates the URL via history.pushState / replaceState
+  // whenever the query, filters, or time range changes.
+  function broadcastNav() {
+    window.postMessage({ type: "__LF_NAV__" }, "*");
+  }
+
+  const origPush    = history.pushState;
+  const origReplace = history.replaceState;
+  history.pushState = function (...a) {
+    origPush.apply(this, a);
+    broadcastNav();
+  };
+  history.replaceState = function (...a) {
+    origReplace.apply(this, a);
+    broadcastNav();
+  };
+  window.addEventListener("hashchange", broadcastNav);
+  window.addEventListener("popstate",   broadcastNav);
+
   // ── Patch fetch ─────────────────────────────────────────────────────────
   const origFetch = window.fetch;
   window.fetch = async function (...args) {
