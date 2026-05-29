@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Log Filter Helper</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="header">
+    <span class="logo">🔍</span>
+    <h1>Log Filter Helper</h1>
+    <select id="theme-select" class="theme-select" title="Color theme">
+      <option value="light">☀ White</option>
+      <option value="dark">🌙 Dark</option>
+    </select>
+    <button id="btn-pin" class="btn-pin" title="Pop out as floating window">📌</button>
+  </div>
+
+  <!-- Donate & GitHub -->
+  <div class="donate-bar">
+    <span class="donate-icon">☕</span>
+    <div class="donate-info">
+      <span class="donate-bank">KBANK <strong>002-8-66156-8</strong> Sinlapawit</span>
+    </div>
+    <a href="https://github.com/kaolnwza/opensearch-log-helper"
+       target="_blank" class="donate-gh" title="View on GitHub">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor">
+        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38
+          0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13
+          -.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66
+          .07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15
+          -.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0
+          1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82
+          1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01
+          1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+      </svg>
+      GitHub
+    </a>
+  </div>
+
+  <div class="section">
+    <button id="btn-expand" class="btn btn-secondary full-width">
+      ▶ Expand All Log Entries
+    </button>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- Container Name -->
+  <div class="section">
+    <div class="section-header">
+      <label class="label">Container Name</label>
+      <button id="btn-clear-container" class="btn-clear-section" title="Clear from query">✕ Clear</button>
+    </div>
+    <p class="hint">Adds: <code>kubernetes.container_name:"a" AND/OR "b"</code></p>
+
+    <div id="container-tag-box" class="tag-box">
+      <input id="input-container" type="text" class="tag-input"
+             placeholder="Type or pick, then Enter…"
+             list="container-suggestions"
+             autocomplete="off" />
+    </div>
+    <p class="tag-hint">Press <kbd>Enter</kbd> to add · <kbd>Backspace</kbd> to remove last · <kbd>⌘↵</kbd> to apply</p>
+
+    <div class="row mt4">
+      <select id="op-container" class="select">
+        <option value="OR">OR</option>
+        <option value="AND">AND</option>
+      </select>
+      <select id="neg-container" class="select">
+        <option value="must">Must match</option>
+        <option value="must_not">Must NOT match</option>
+      </select>
+    </div>
+
+    <div class="row mt4">
+      <button id="btn-container" class="btn btn-primary full-width">Apply</button>
+    </div>
+    <p class="shortcut-hint">⌘↵ / Ctrl+↵ to apply</p>
+  </div>
+
+  <!-- Suggestion datalist -->
+  <datalist id="container-suggestions">
+    <option value="adaptor-account-cdd">
+    <option value="adaptor-account-dcb-vb">
+    <option value="adaptor-application-ccd">
+    <option value="adaptor-application-channel">
+    <option value="adaptor-application-ncb">
+    <option value="adaptor-document-alfresco">
+    <option value="adaptor-document-cmlos">
+    <option value="adaptor-document-email">
+    <option value="adaptor-document-signing">
+    <option value="adaptor-document-statement">
+    <option value="batch-account-stamp-duty-export">
+    <option value="batch-application-geography">
+    <option value="batch-application-notification">
+    <option value="batch-application-occupation">
+    <option value="batch-application-update-expired">
+    <option value="core-account-accept">
+    <option value="core-account-activate-flow">
+    <option value="core-account-calc-stamp-duty">
+    <option value="core-account-deduct-fees">
+    <option value="core-account-setup-revolvingloan">
+    <option value="core-account-update-kyc">
+    <option value="core-application-appform-package">
+    <option value="core-application-ccd-master">
+    <option value="core-application-compliant-check">
+    <option value="core-application-decision">
+    <option value="core-application-dre-consume">
+    <option value="core-application-ncb-consume">
+    <option value="core-application-personal-info">
+    <option value="core-application-request-consent">
+    <option value="core-application-request-form">
+    <option value="core-application-submit-flow">
+    <option value="core-document-alfresco-consume">
+    <option value="core-document-flow">
+    <option value="core-document-follow-up">
+    <option value="core-document-generate-report-go">
+    <option value="core-document-mgmt">
+    <option value="core-document-resend-contract">
+    <option value="core-document-send-email">
+    <option value="core-document-signing">
+    <option value="core-document-statement-consume">
+    <option value="core-foundation-centralize-log">
+    <option value="core-product-master">
+    <option value="dgl-vb">
+    <option value="orch-account-accept">
+    <option value="orch-application-form-mgmt">
+    <option value="orch-application-partner">
+    <option value="orch-document-mgmt">
+    <option value="orch-document-partner">
+    <option value="orch-document-upload">
+    <option value="orch-product-management">
+    <option value="orch-schedule">
+    <option value="proc-gotenberg">
+  </datalist>
+
+  <div class="divider"></div>
+
+  <!-- JSON Payload Search -->
+  <div class="section">
+    <div class="section-header">
+      <label class="label">JSON Payload Search</label>
+      <button id="btn-clear-payload" class="btn-clear-section" title="Clear from query">✕ Clear</button>
+    </div>
+    <p id="payload-hint" class="hint">Adds: <code id="payload-hint-code"></code></p>
+
+    <div id="tag-box" class="tag-box">
+      <input id="input-payload" type="text" class="tag-input" placeholder="Type term + Enter to add…" />
+    </div>
+    <p class="tag-hint">Press <kbd>Enter</kbd> to add · <kbd>Backspace</kbd> to remove last · <kbd>⌘↵</kbd> to apply</p>
+
+    <div class="row mt4">
+      <select id="field-payload" class="select">
+        <option value="json_payload">json_payload</option>
+        <option value="message">message</option>
+        <option value="log">log</option>
+      </select>
+      <select id="op-payload" class="select">
+        <option value="AND">AND</option>
+        <option value="OR">OR</option>
+      </select>
+    </div>
+
+    <div class="row mt4">
+      <select id="mode-payload" class="select">
+        <option value="regex">Regex /.*xxx.*/ (recommended)</option>
+        <option value="wildcard">Wildcard *xxx*</option>
+        <option value="match">Match (exact term)</option>
+      </select>
+    </div>
+
+    <div class="row mt4">
+      <button id="btn-payload" class="btn btn-primary full-width">Apply</button>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- JSON Field Extractor -->
+  <div class="section">
+    <div class="section-header">
+      <label class="label">JSON Field Extractor</label>
+      <button id="btn-clear-extract" class="btn-clear-section" title="Stop and clear">✕ Clear</button>
+    </div>
+    <p class="hint">Extracts fields from <code>json_payload</code> cells inline</p>
+
+    <!-- Presets -->
+    <div class="row" style="margin-bottom:7px;">
+      <select id="preset-extract" class="select">
+        <option value="">— Load preset —</option>
+        <option value="dev">dev · timestamp, level, msg, loan_app_id, trace_id, span_id</option>
+      </select>
+    </div>
+
+    <div id="extract-tag-box" class="tag-box">
+      <input id="input-extract" type="text" class="tag-input" placeholder="e.g. level, msg, event…" />
+    </div>
+    <p class="tag-hint">Press <kbd>Enter</kbd> to add · <kbd>⌘↵</kbd> to apply</p>
+
+    <div class="row mt4">
+      <button id="btn-extract-apply" class="btn btn-primary full-width">Apply to Table</button>
+    </div>
+    <div class="row mt4" style="gap:6px;">
+      <button id="btn-extract-stop" class="btn btn-secondary full-width">Stop</button>
+      <button id="btn-hide-col" class="btn btn-secondary full-width">🙈 Hide Column</button>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="section">
+    <button id="btn-clear" class="btn btn-danger full-width">✕ Clear All Filters</button>
+  </div>
+
+  <div id="status" class="status hidden"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
