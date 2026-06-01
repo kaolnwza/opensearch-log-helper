@@ -22,9 +22,3 @@ A Chrome extension that supercharges OpenSearch Dashboards Discover with:
 3. Enable **Developer mode**
 4. Click **Load unpacked** → select this folder
 5. Add `json_payload` to Selected fields
-
-## Support
-
-If this helps you, feel free to buy me a coffee ☕
-
-**KBANK 002-8-66156-8** Sinlapawit
