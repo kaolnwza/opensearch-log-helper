@@ -303,6 +303,17 @@ function purgeOverlays() {
         .forEach((el) => el.removeAttribute("data-lf-key"));
 }
 
+// ── Clear overlays immediately on query / navigation change ──────────────
+window.addEventListener("message", (e) => {
+    if (e.source !== window) return;
+
+    // Navigation / query change → clear boxes right away
+    if (e.data?.type === "__LF_NAV__") {
+        if (activeFields.length) purgeOverlays();
+        return;
+    }
+});
+
 window.addEventListener("message", (e) => {
     if (e.source !== window || e.data?.type !== "__LF_HITS__") return;
     cachedPayloads = e.data.payloads || [];
