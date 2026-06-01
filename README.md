@@ -22,3 +22,4 @@ A Chrome extension that supercharges OpenSearch Dashboards Discover with:
 3. Enable **Developer mode**
 4. Click **Load unpacked** → select this folder
 5. Add `json_payload` to Selected fields
+6. Set Query Language to Lucene
