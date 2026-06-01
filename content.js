@@ -601,52 +601,89 @@ function buildOverlay(parsed, regexResult, specs, rawJson) {
         any = true;
     });
 
-    if (any) wrap.appendChild(grid);
-
-    // ── Collapsible json_payload viewer ──────────────────────────────────────
+    // ── json_payload toggle column (inside the grid row, above the border) ──
+    let pre = null;
     if (rawJson) {
-        const sep = document.createElement("div");
-        sep.style.cssText = "padding:0 12px;";
+        // Pre element (outside grid, hidden by default)
+        pre = document.createElement("pre");
+        pre.innerHTML = syntaxHighlight(parsed, rawJson);
+        pre.style.cssText =
+            `display:none;margin:0;padding:12px 16px;` +
+            `background:${th.jsonBg};border-top:1px solid ${th.jsonBord};` +
+            `color:${th.jsonFg};font-size:13px;line-height:1.7;overflow:auto;` +
+            "height:220px;white-space:pre;word-break:normal;" +
+            "width:100%;box-sizing:border-box;";
 
-        const toggle = document.createElement("div");
-        toggle.style.cssText =
-            `cursor:pointer;display:inline-flex;align-items:center;gap:6px;` +
-            `color:${T().toggle};user-select:none;padding:4px 0 2px;font-size:12px;`;
+        // Toggle column — sits inside the grid row
+        const toggleCol = document.createElement("div");
+        toggleCol.style.cssText =
+            `padding:5px 14px;display:flex;align-items:center;gap:5px;` +
+            `cursor:pointer;user-select:none;white-space:nowrap;flex-shrink:0;` +
+            `color:${th.toggle};font-size:12px;border-right:none;`;
 
         const arrow = document.createElement("span");
         arrow.textContent = "▶";
-        arrow.style.cssText =
-            "font-size:9px;display:inline-block;transition:transform 0.15s;";
+        arrow.style.cssText = "font-size:9px;display:inline-block;transition:transform 0.15s;";
 
         const lbl = document.createElement("span");
         lbl.textContent = "json_payload";
 
-        toggle.appendChild(arrow);
-        toggle.appendChild(lbl);
-        sep.appendChild(toggle);
+        toggleCol.appendChild(arrow);
+        toggleCol.appendChild(lbl);
+        grid.appendChild(toggleCol);
 
-        const pre = document.createElement("pre");
-        pre.innerHTML = syntaxHighlight(parsed, rawJson);
-        pre.style.cssText =
-            `display:none;margin:6px 0 2px;padding:12px 16px;` +
-            `background:${th.jsonBg};border:1px solid ${th.jsonBord};border-radius:6px;` +
-            `color:${th.jsonFg};font-size:13px;line-height:1.7;overflow:auto;` +
-            "max-height:440px;white-space:pre;word-break:normal;" +
-            "width:100%;box-sizing:border-box;";
-
-        toggle.addEventListener("click", (e) => {
+        toggleCol.addEventListener("click", (e) => {
             e.stopPropagation();
             const open = pre.style.display !== "none";
             pre.style.display = open ? "none" : "block";
-            sep.style.paddingBottom = open ? "0" : "6px";
             arrow.style.transform = open ? "rotate(0deg)" : "rotate(90deg)";
-            toggle.style.color = open ? T().toggle : T().key;
+            toggleCol.style.color = open ? T().toggle : T().key;
         });
 
-        sep.appendChild(pre);
-        wrap.appendChild(sep);
+        // ── Height resize handle ──────────────────────────────────────────────
+        const resizeBar = document.createElement("div");
+        resizeBar.style.cssText =
+            `display:none;height:6px;cursor:row-resize;` +
+            `background:${th.sep};transition:background 0.1s;`;
+        resizeBar.addEventListener("mouseenter", () => {
+            resizeBar.style.background = th.border;
+        });
+        resizeBar.addEventListener("mouseleave", () => {
+            resizeBar.style.background = th.sep;
+        });
+        resizeBar.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const startY = e.clientY;
+            const startH = pre.offsetHeight;
+            const onMove = (ev) => {
+                pre.style.height = Math.max(60, startH + ev.clientY - startY) + "px";
+            };
+            const onUp = () => {
+                document.removeEventListener("mousemove", onMove);
+                document.removeEventListener("mouseup", onUp);
+            };
+            document.addEventListener("mousemove", onMove);
+            document.addEventListener("mouseup", onUp);
+        });
+
+        // Show/hide resize bar together with pre
+        const origToggle = toggleCol.onclick;
+        toggleCol.addEventListener("click", () => {
+            const open = pre.style.display !== "none";
+            resizeBar.style.display = open ? "none" : "block";
+        });
+
+        wrap.appendChild(grid);
+        wrap.appendChild(pre);
+        wrap.appendChild(resizeBar);
         any = true;
+    } else {
+        if (any) wrap.appendChild(grid);
     }
+
+    // Allow wrap to show the pre without clipping
+    wrap.style.overflow = "visible";
 
     return any ? wrap : null;
 }
