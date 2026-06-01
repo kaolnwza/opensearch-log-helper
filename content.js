@@ -614,7 +614,7 @@ function buildOverlay(parsed, regexResult, specs, rawJson) {
         toggleRow.style.cssText =
             `padding:3px 12px;display:inline-flex;align-items:center;gap:5px;` +
             `cursor:pointer;user-select:none;color:${th.toggle};font-size:11px;` +
-            `border-top:1px solid ${th.sep};width:100%;box-sizing:border-box;`;
+            `width:100%;box-sizing:border-box;`;
 
         const arrow = document.createElement("span");
         arrow.textContent = "▶";
