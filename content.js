@@ -526,8 +526,13 @@ function buildOverlay(parsed, regexResult, specs, rawJson) {
         "width:100%;box-sizing:border-box;overflow:hidden;";
 
     // ── Column grid ───────────────────────────────────────────────────────────
+    // grid = flex-column wrapper (has the border-bottom "br")
+    // colRow = flex-row for the field columns
     const grid = document.createElement("div");
-    grid.style.cssText = `display:flex;align-items:stretch;border-bottom:1px solid ${th.sep};`;
+    grid.style.cssText = `display:flex;flex-direction:column;border-bottom:1px solid ${th.sep};`;
+
+    const colRow = document.createElement("div");
+    colRow.style.cssText = "display:flex;align-items:stretch;";
 
     let any = false;
     specs.forEach((spec) => {
@@ -597,9 +602,10 @@ function buildOverlay(parsed, regexResult, specs, rawJson) {
         col.appendChild(hdr);
         col.appendChild(val);
         col.appendChild(handle);
-        grid.appendChild(col);
+        colRow.appendChild(col);
         any = true;
     });
+    grid.appendChild(colRow);
 
     // ── json_payload toggle row (below columns, inside grid = above the border) ─
     if (rawJson) {
