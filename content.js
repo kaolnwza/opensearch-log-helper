@@ -290,6 +290,10 @@ let cachedPayloads = []; // index → parsed json_payload (or null)
     tbody tr:not(.lf-extract-row):has(+ tr.lf-extract-row) {
       display: none !important;
     }
+    tbody tr:not(.lf-extract-row):has(+ tr + tr.lf-extract-row) td,
+    tbody tr:not(.lf-extract-row):has(+ tr + tr.lf-extract-row) th {
+      border-bottom: none !important;
+    }
   `;
     document.head.appendChild(s);
 })();
