@@ -7,8 +7,14 @@
       const jp  = src.json_payload;
       if (!jp) return null;
       // Normalise: might already be an object or a JSON string
-      if (typeof jp === "object") return jp;
-      try { return JSON.parse(jp); } catch { return jp; }
+      let obj = (typeof jp === "object") ? jp : null;
+      if (obj === null) { try { obj = JSON.parse(jp); } catch { return jp; } }
+      // Attach sibling _source fields the extractor may reference
+      // (e.g. kubernetes.container_name) without clobbering json_payload keys.
+      if (obj && typeof obj === "object" && src.kubernetes && obj.kubernetes === undefined) {
+        obj = { ...obj, kubernetes: src.kubernetes };
+      }
+      return obj;
     });
     window.postMessage({ type: "__LF_HITS__", payloads }, "*");
   }

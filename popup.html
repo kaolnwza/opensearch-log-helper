@@ -188,13 +188,13 @@
       <label class="label">JSON Field Extractor</label>
       <button id="btn-clear-extract" class="btn-clear-section" title="Stop and clear">✕ Clear</button>
     </div>
-    <p class="hint">Extracts fields from <code>json_payload</code> cells inline</p>
+    <p class="hint">Extracts fields from <code>json_payload</code> cells inline — also resolves table columns like <code>kubernetes.container_name</code></p>
 
     <!-- Presets -->
     <div class="row" style="margin-bottom:7px;">
       <select id="preset-extract" class="select">
         <option value="">— Load preset —</option>
-        <option value="dev">dev · timestamp, level, msg, loan_app_id, trace_id, span_id</option>
+        <option value="dev">dev · timestamp, level, msg, loan_app_id, trace_id, span_id, Wf-traceparent</option>
       </select>
     </div>
 

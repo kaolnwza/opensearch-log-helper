@@ -271,6 +271,25 @@ function applyColWidth(fieldName, px) {
         });
 }
 
+// Index of the column header currently being dragged (null when not dragging)
+let colDragIndex = null;
+
+// Move an extractor column from one position to another, rebuild every overlay
+// with the new order, and persist it so the popup + reloads keep the change.
+function reorderExtractFields(from, to) {
+    if (from == null || from === to) return;
+    if (from < 0 || from >= activeFields.length) return;
+    const f = activeFields.slice();
+    const [moved] = f.splice(from, 1);
+    f.splice(to, 0, moved);
+    activeFields = f;
+    try {
+        chrome.storage?.local?.set({ extractFields: f });
+    } catch {}
+    purgeOverlays();
+    processTableRows(activeFields);
+}
+
 // Cache of json_payload objects captured from intercepted search responses
 let cachedPayloads = []; // index → parsed json_payload (or null)
 
@@ -471,20 +490,62 @@ function regexExtractOne(text, fieldPath) {
     return v;
 }
 
-// Build a flat map of all raw field values needed by any spec (for regex fallback)
-function regexExtract(text, specs) {
+// Flatten every distinct field path referenced by any spec (simple + coalesce)
+function collectFields(specs) {
     const needed = new Set();
     specs.forEach((spec) => {
         const p = parseSpec(spec);
         if (p.type === "coalesce") p.fields.forEach((f) => needed.add(f));
         else needed.add(p.field);
     });
+    return needed;
+}
+
+// Build a flat map of all raw field values needed by any spec (for regex fallback)
+function regexExtract(text, specs) {
     const result = {};
-    needed.forEach((f) => {
+    collectFields(specs).forEach((f) => {
         const v = regexExtractOne(text, f);
         if (v !== undefined) result[f] = v;
     });
     return result;
+}
+
+// Table header cells (both plain <thead> and ARIA grids). Queried once per
+// processTableRows pass and threaded through, never per-row.
+function getHeaderCells() {
+    return [
+        ...document.querySelectorAll("thead tr th"),
+        ...document.querySelectorAll("thead tr [role='columnheader']"),
+    ];
+}
+
+// For any spec field the json_payload doesn't provide, fall back to the matching
+// sibling table column (kept even when that column is hidden — textContent still
+// resolves). Mutates regexResult in place so resolveSpec can pick it up. `headers`
+// is precomputed by the caller; row cells are read once and only if needed.
+function enrichFromRow(row, specs, parsed, regexResult, headers) {
+    if (!row || !headers.length) return;
+    let cells = null;
+    collectFields(specs).forEach((f) => {
+        const fromJson = parsed ? getNestedValue(parsed, f) : undefined;
+        if (fromJson !== undefined && fromJson !== null && fromJson !== "")
+            return;
+        if (regexResult[f] !== undefined) return;
+        const idx = headers.findIndex((h) =>
+            h.textContent.trim().includes(f),
+        );
+        if (idx < 0) return;
+        if (!cells)
+            cells = [
+                ...row.querySelectorAll(":scope > td"),
+                ...row.querySelectorAll(":scope > [role='gridcell']"),
+            ];
+        const cell = cells[idx];
+        if (!cell) return;
+        const v = (cell.textContent || "").trim();
+        if (v) regexResult[f] = v;
+    });
 }
 
 // Resolve one spec to { label, displayValue } using parsed JSON or regex fallback
@@ -493,7 +554,9 @@ function resolveSpec(spec, parsed, regexResult) {
 
     if (p.type === "coalesce") {
         for (const f of p.fields) {
-            const val = parsed ? getNestedValue(parsed, f) : regexResult[f];
+            let val = parsed ? getNestedValue(parsed, f) : undefined;
+            if (val === undefined || val === null || val === "")
+                val = regexResult[f];
             if (val !== undefined && val !== null && val !== "") {
                 return {
                     label: f,
@@ -509,12 +572,16 @@ function resolveSpec(spec, parsed, regexResult) {
     }
 
     // Simple field — always show the column, empty string when value is missing
-    const val = parsed ? getNestedValue(parsed, p.field) : regexResult[p.field];
+    let val = parsed ? getNestedValue(parsed, p.field) : undefined;
+    if (val === undefined || val === null || val === "")
+        val = regexResult[p.field];
     const dv =
         val !== undefined && val !== null
-            ? typeof val === "object"
-                ? JSON.stringify(val)
-                : String(val)
+            ? Array.isArray(val) && val.length === 1
+                ? String(val[0])
+                : typeof val === "object"
+                    ? JSON.stringify(val)
+                    : String(val)
             : "";
     return { label: p.field, displayValue: dv };
 }
@@ -539,7 +606,7 @@ function buildOverlay(parsed, regexResult, specs, rawJson) {
     colRow.style.cssText = "display:flex;align-items:stretch;";
 
     let any = false;
-    specs.forEach((spec) => {
+    specs.forEach((spec, colIdx) => {
         const resolved = resolveSpec(spec, parsed, regexResult);
         if (resolved === null) return;
 
@@ -554,12 +621,40 @@ function buildOverlay(parsed, regexResult, specs, rawJson) {
             `position:relative;padding:5px 10px 5px 12px;` +
             `border-right:1px solid ${th.sep};overflow:hidden;`;
 
-        // Field name header
+        // Field name header — also the drag handle for reordering columns
         const hdr = document.createElement("div");
         hdr.style.cssText =
-            `color:${th.hdr};font-size:10px;letter-spacing:0.4px;` +
+            `color:${th.hdr};font-size:10px;letter-spacing:0.4px;cursor:grab;` +
             "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px;";
         hdr.textContent = fieldName;
+        hdr.title = `${fieldName} · drag to reorder`;
+        hdr.draggable = true;
+
+        // ── Drag to reorder columns (grab the header, drop on any column) ────
+        hdr.addEventListener("dragstart", (e) => {
+            colDragIndex = colIdx;
+            e.dataTransfer.effectAllowed = "move";
+            col.style.opacity = "0.4";
+        });
+        hdr.addEventListener("dragend", () => {
+            colDragIndex = null;
+            col.style.opacity = "";
+        });
+        col.addEventListener("dragover", (e) => {
+            if (colDragIndex === null) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+        });
+        col.addEventListener("drop", (e) => {
+            if (colDragIndex === null) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const rect = col.getBoundingClientRect();
+            let to = e.clientX > rect.left + rect.width / 2 ? colIdx + 1 : colIdx;
+            const from = colDragIndex;
+            if (from < to) to -= 1;
+            reorderExtractFields(from, to);
+        });
 
         // Value — with special level colouring
         const hasVal = Boolean(resolved.displayValue);
@@ -627,18 +722,40 @@ function buildOverlay(parsed, regexResult, specs, rawJson) {
         const lbl = document.createElement("span");
         lbl.textContent = "json_payload";
 
+        // ── Action buttons (right-aligned): Full/Fit + Copy ──────────────────
+        const makeMiniBtn = (text) => {
+            const b = document.createElement("button");
+            b.textContent = text;
+            b.style.cssText =
+                `font-family:inherit;font-size:10px;line-height:1;padding:3px 7px;` +
+                `margin-left:6px;cursor:pointer;border-radius:4px;` +
+                `border:1px solid ${th.jsonBord};background:${th.jsonBg};` +
+                `color:${th.toggle};white-space:nowrap;`;
+            b.addEventListener("mouseenter", () => { b.style.background = th.sep; });
+            b.addEventListener("mouseleave", () => { b.style.background = th.jsonBg; });
+            return b;
+        };
+        const btnGroup = document.createElement("span");
+        btnGroup.style.cssText = "margin-left:10px;display:inline-flex;align-items:center;";
+        const fullBtn = makeMiniBtn("⤢ Full");
+        const copyBtn = makeMiniBtn("⧉ Copy");
+        btnGroup.appendChild(fullBtn);
+        btnGroup.appendChild(copyBtn);
+
         toggleRow.appendChild(arrow);
         toggleRow.appendChild(lbl);
+        toggleRow.appendChild(btnGroup);
         grid.appendChild(toggleRow);   // inside grid → above the grid's border-bottom
 
         // Pre element (below the grid border)
+        const DEFAULT_JSON_H = 400;
         const pre = document.createElement("pre");
         pre.innerHTML = syntaxHighlight(parsed, rawJson);
         pre.style.cssText =
             `display:none;margin:0;padding:12px 16px;` +
             `background:${th.jsonBg};border-top:1px solid ${th.jsonBord};` +
             `color:${th.jsonFg};font-size:13px;line-height:1.7;overflow:auto;` +
-            "height:220px;white-space:pre;word-break:normal;" +
+            `height:${DEFAULT_JSON_H}px;white-space:pre;word-break:normal;` +
             "width:100%;box-sizing:border-box;";
 
         // ── Height resize handle (drag to resize pre) ─────────────────────────
@@ -664,14 +781,55 @@ function buildOverlay(parsed, regexResult, specs, rawJson) {
             document.addEventListener("mouseup", onUp);
         });
 
-        // Single click handler — toggle pre + resizeBar together
+        // Open / close the JSON viewer (pre + resize handle together)
+        const setOpen = (open) => {
+            pre.style.display       = open ? "block" : "none";
+            resizeBar.style.display = open ? "block" : "none";
+            arrow.style.transform   = open ? "rotate(90deg)" : "rotate(0deg)";
+            toggleRow.style.color   = open ? T().key : T().toggle;
+        };
         toggleRow.addEventListener("click", (e) => {
             e.stopPropagation();
-            const isOpen = pre.style.display !== "none";
-            pre.style.display       = isOpen ? "none"  : "block";
-            resizeBar.style.display = isOpen ? "none"  : "block";
-            arrow.style.transform   = isOpen ? "rotate(0deg)" : "rotate(90deg)";
-            toggleRow.style.color   = isOpen ? T().toggle : T().key;
+            setOpen(pre.style.display === "none");
+        });
+
+        // ── Full / Fit: expand the pre to the entire JSON (no scroll cap) ────
+        let full = false;
+        fullBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            if (pre.style.display === "none") setOpen(true); // reveal first
+            full = !full;
+            if (full) {
+                pre.style.height = "auto";
+                pre.style.maxHeight = "none";
+                resizeBar.style.display = "none"; // no fixed height to drag
+                fullBtn.textContent = "⤡ Fit";
+            } else {
+                pre.style.height = DEFAULT_JSON_H + "px";
+                pre.style.maxHeight = "";
+                resizeBar.style.display = "block";
+                fullBtn.textContent = "⤢ Full";
+            }
+        });
+
+        // ── Copy: pretty-printed JSON to clipboard ──────────────────────────
+        copyBtn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const text = parsed ? JSON.stringify(parsed, null, 2) : rawJson;
+            try {
+                await navigator.clipboard.writeText(text);
+            } catch {
+                const ta = document.createElement("textarea");
+                ta.value = text;
+                ta.style.cssText = "position:fixed;left:-9999px;top:0;";
+                document.body.appendChild(ta);
+                ta.select();
+                try { document.execCommand("copy"); } catch {}
+                ta.remove();
+            }
+            copyBtn.textContent = "✓ Copied";
+            clearTimeout(copyBtn._t);
+            copyBtn._t = setTimeout(() => (copyBtn.textContent = "⧉ Copy"), 1200);
         });
 
         wrap.appendChild(grid);
@@ -705,42 +863,79 @@ function insertOverlayAfterRow(row, overlay, fieldKey) {
     return true;
 }
 
+// A row already carries a current overlay for this field set → nothing to do.
+function rowHasCurrentOverlay(row, fieldKey) {
+    const next = row.nextElementSibling;
+    return (
+        next?.classList.contains(EXTRACT_ROW_CLASS) &&
+        next.dataset.lfKey === fieldKey
+    );
+}
+
+// Candidate JSON cells, excluding our own injected overlays. A single combined
+// selector (querySelectorAll dedupes) instead of five separate queries + Set.
+const CANDIDATE_SELECTOR =
+    'td,[role="gridcell"],.euiDataGridRowCell__content,' +
+    '.kbnDocTableCell,[data-test-subj*="docTableField"]';
+
+function collectCandidateCells() {
+    const out = [];
+    document.querySelectorAll(CANDIDATE_SELECTOR).forEach((cell) => {
+        // Skip cells inside (or belonging to) our overlays — they contain JSON too.
+        if (
+            cell.classList.contains(EXTRACT_CLASS) ||
+            cell.closest(`.${EXTRACT_ROW_CLASS}`) ||
+            cell.closest(`.${EXTRACT_CLASS}`)
+        )
+            return;
+        out.push(cell);
+    });
+    return out;
+}
+
 function processTableRows(fields) {
     if (!fields.length) return 0;
     const fieldKey = fields.join(",");
     let found = 0;
     const seenRows = new Set();
+    const headers = getHeaderCells();
 
     // ── Pass 1: visible JSON cells (json_payload is a selected column) ───────
-    const candidates = new Set([
-        ...document.querySelectorAll("td"),
-        ...document.querySelectorAll('[role="gridcell"]'),
-        ...document.querySelectorAll(".euiDataGridRowCell__content"),
-        ...document.querySelectorAll(".kbnDocTableCell"),
-        ...document.querySelectorAll('[data-test-subj*="docTableField"]'),
-    ]);
+    collectCandidateCells().forEach((cell) => {
+        const parentRow = cell.closest("tr");
 
-    candidates.forEach((cell) => {
-        const raw = (cell.innerText || cell.textContent || "").trim();
+        // Fast path: skip rows/cells already carrying a current overlay so we
+        // never rebuild overlay DOM for unchanged rows (the streaming-log case).
+        if (parentRow) {
+            if (seenRows.has(parentRow)) return;
+            if (rowHasCurrentOverlay(parentRow, fieldKey)) {
+                seenRows.add(parentRow);
+                found++;
+                return;
+            }
+        } else if (cell.dataset.lfKey === fieldKey) {
+            found++;
+            return;
+        }
+
+        // textContent (not innerText) — innerText forces a synchronous reflow
+        // per cell, which is the dominant cost on large tables.
+        const raw = (cell.textContent || "").trim();
         if (!raw.slice(0, 200).includes("{")) return;
 
         const jsonStart = raw.indexOf("{");
         const jsonText = jsonStart > 0 ? raw.slice(jsonStart) : raw;
         const parsed = tryParseJson(jsonText);
         const regex = regexExtract(raw, fields);
+        enrichFromRow(parentRow, fields, parsed, regex, headers);
         const overlay = buildOverlay(parsed, regex, fields, jsonText);
         if (!overlay) return;
 
-        const parentRow = cell.closest("tr");
-        if (parentRow && !seenRows.has(parentRow)) {
+        if (parentRow) {
             seenRows.add(parentRow);
-            if (insertOverlayAfterRow(parentRow, overlay, fieldKey)) found++;
-            else found++; // already up-to-date
-        } else if (!parentRow) {
-            if (cell.dataset.lfKey === fieldKey) {
-                found++;
-                return;
-            }
+            insertOverlayAfterRow(parentRow, overlay, fieldKey);
+            found++;
+        } else {
             cell.dataset.lfKey = fieldKey;
             cell.querySelectorAll(`.${EXTRACT_CLASS}`).forEach((el) =>
                 el.remove(),
@@ -766,6 +961,10 @@ function processTableRows(fields) {
     dataRows.forEach((row, idx) => {
         const payload = cachedPayloads[idx];
         if (!payload) return;
+        if (rowHasCurrentOverlay(row, fieldKey)) {
+            found++;
+            return;
+        }
 
         const parsed =
             typeof payload === "object"
@@ -776,8 +975,8 @@ function processTableRows(fields) {
         const overlay = buildOverlay(parsed, regex, fields, jsonText);
         if (!overlay) return;
 
-        if (insertOverlayAfterRow(row, overlay, fieldKey)) found++;
-        else found++;
+        insertOverlayAfterRow(row, overlay, fieldKey);
+        found++;
     });
 
     return found;
@@ -830,16 +1029,31 @@ function startExtract(fields) {
 
     if (extractObserver) extractObserver.disconnect();
     extractObserver = new MutationObserver((mutations) => {
-        // If OpenSearch removed non-overlay rows → table re-rendered → purge stale overlays
-        const tableRowsRemoved = mutations.some((m) =>
-            [...m.removedNodes].some(
-                (n) =>
-                    n.nodeType === 1 &&
-                    n.tagName === "TR" &&
-                    !n.classList?.contains(EXTRACT_ROW_CLASS),
-            ),
-        );
-        if (tableRowsRemoved) purgeOverlays();
+        let tableRowsRemoved = false;
+        let relevant = false;
+
+        // Classify mutations once: ignore the ones caused by our own overlay
+        // insertions/removals, otherwise the observer feeds itself in a loop.
+        for (const m of mutations) {
+            for (const n of m.removedNodes) {
+                if (n.nodeType !== 1) continue;
+                if (n.classList?.contains(EXTRACT_ROW_CLASS)) continue; // ours
+                if (n.tagName === "TR") tableRowsRemoved = true;
+                relevant = true;
+            }
+            for (const n of m.addedNodes) {
+                if (n.nodeType !== 1) continue;
+                if (
+                    n.classList?.contains(EXTRACT_ROW_CLASS) ||
+                    n.classList?.contains(EXTRACT_CLASS)
+                )
+                    continue; // ours
+                relevant = true;
+            }
+        }
+
+        if (tableRowsRemoved) purgeOverlays(); // table re-rendered → drop stale overlays
+        if (!relevant) return; // only our own DOM churned — skip reprocessing
 
         clearTimeout(window._lfTimer);
         window._lfTimer = setTimeout(() => processTableRows(activeFields), 300);

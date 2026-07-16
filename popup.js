@@ -3,6 +3,7 @@ const $ = (id) => document.getElementById(id);
 // ── Status ─────────────────────────────────────────────────────────────────
 function showStatus(msg, type = "success") {
   const el = $("status");
+  if (!el) return;
   el.textContent = msg;
   el.className = `status ${type}`;
   setTimeout(() => (el.className = "status hidden"), 2800);
@@ -29,23 +30,27 @@ function hintExample(mode, field) {
 }
 
 function updateHint() {
-  $("payload-hint-code").textContent = hintExample(
-    $("mode-payload").value,
-    $("field-payload").value
-  );
+  const hintEl = $("payload-hint-code");
+  const modeEl = $("mode-payload");
+  const fieldEl = $("field-payload");
+  if (hintEl && modeEl && fieldEl)
+    hintEl.textContent = hintExample(modeEl.value, fieldEl.value);
 }
 
-["mode-payload", "field-payload"].forEach((id) =>
-  $(id).addEventListener("change", () => {
+["mode-payload", "field-payload"].forEach((id) => {
+  const el = $(id);
+  if (!el) return;
+  el.addEventListener("change", () => {
     updateHint();
-    chrome.storage?.local?.set({ payloadMode: $("mode-payload").value });
-  })
-);
+    chrome.storage?.local?.set({ payloadMode: $("mode-payload")?.value });
+  });
+});
 updateHint();
 
 // ── Generic tag-input factory ──────────────────────────────────────────────
 function makeTagInput({ boxId, inputId, storageKey }) {
   let tags = [];
+  let dragIndex = null;
 
   function render() {
     const box = $(boxId), input = $(inputId);
@@ -54,15 +59,47 @@ function makeTagInput({ boxId, inputId, storageKey }) {
       const chip = document.createElement("span");
       chip.className = "tag";
       chip.title = term;
+      chip.draggable = true;
+      chip.style.cursor = "grab";
 
       const lbl = document.createElement("span");
       lbl.textContent = term;
-      lbl.style.cssText = "overflow:hidden;text-overflow:ellipsis;";
+      lbl.style.cssText = "overflow:hidden;text-overflow:ellipsis;pointer-events:none;";
 
       const rm = document.createElement("button");
       rm.className = "tag-remove";
       rm.textContent = "×";
+      rm.draggable = false;
       rm.addEventListener("click", () => { tags.splice(i, 1); render(); save(); });
+
+      // ── Drag to reorder ──────────────────────────────────────────────────
+      chip.addEventListener("dragstart", (e) => {
+        dragIndex = i;
+        e.dataTransfer.effectAllowed = "move";
+        chip.style.opacity = "0.4";
+      });
+      chip.addEventListener("dragend", () => {
+        dragIndex = null;
+        chip.style.opacity = "";
+      });
+      chip.addEventListener("dragover", (e) => {
+        if (dragIndex === null) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+      });
+      chip.addEventListener("drop", (e) => {
+        e.preventDefault();
+        const from = dragIndex;
+        if (from === null) return;
+        const rect = chip.getBoundingClientRect();
+        let to = e.clientX > rect.left + rect.width / 2 ? i + 1 : i;
+        if (from < to) to -= 1;
+        if (to === from) return;
+        const [moved] = tags.splice(from, 1);
+        tags.splice(to, 0, moved);
+        render();
+        save();
+      });
 
       chip.appendChild(lbl);
       chip.appendChild(rm);
@@ -85,7 +122,7 @@ function makeTagInput({ boxId, inputId, storageKey }) {
     if (raw) { add(raw); $(inputId).value = ""; }
   }
 
-  $(inputId).addEventListener("keydown", (e) => {
+  $(inputId)?.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
       e.preventDefault(); add(e.target.value); e.target.value = "";
     } else if (e.key === "Backspace" && !e.target.value && tags.length) {
@@ -93,8 +130,8 @@ function makeTagInput({ boxId, inputId, storageKey }) {
     }
   });
 
-  $(boxId).addEventListener("click", (e) => {
-    if (e.target === $(boxId)) $(inputId).focus();
+  $(boxId)?.addEventListener("click", (e) => {
+    if (e.target === $(boxId)) $(inputId)?.focus();
   });
 
   return {
@@ -201,7 +238,7 @@ $("btn-clear-payload").addEventListener("click", async () => {
 
 // ── Extractor presets ─────────────────────────────────────────────────────
 const EXTRACT_PRESETS = {
-  dev: ["coalesce(time, timestamp)", "level", "coalesce(msg, message)", "loan_app_id", "trace_id", "span_id"],
+  dev: ["coalesce(time, timestamp)", "level", "coalesce(msg, message)", "loan_app_id", "trace_id", "span_id", "request_header.Wf-traceparent"],
 };
 
 const HIDE_FIELDS = ["Time", "kubernetes.container_name", "json_payload"];
