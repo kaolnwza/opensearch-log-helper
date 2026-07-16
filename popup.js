@@ -318,8 +318,8 @@ chrome.storage?.local?.get(
     extractInput.restore(data.extractFields);
     updateHint();
 
-    if (Array.isArray(data.extractFields) && data.extractFields.length) {
-      sendToContent("extractFields", { fields: data.extractFields });
-    }
+    // Keep the saved field list visible, but don't auto-run the extractor on
+    // popup open / refresh — the user re-applies with "Apply to Table" when
+    // they want it. (Extraction also auto-stops when the query changes.)
   }
 );

@@ -86,11 +86,14 @@ function submitQuery(input) {
 // Strips ALL clauses for a given field from a Lucene query string
 function removeFieldFromQuery(q, field) {
     const esc = field.replace(/\./g, "\\.");
+    // Also match dotted subfields (json_payload → json_payload.msg, …) so a
+    // Clear/re-apply strips scoped clauses too, not just the bare field.
+    const fieldPat = `${esc}(?:\\.[\\w-]+)*`;
 
     // 1. Remove parenthesized groups that contain this field
-    //    e.g.  AND (json_payload:/.*x.*/ AND json_payload:/.*y.*/)
+    //    e.g.  AND (json_payload:/.*x.*/ AND json_payload.msg:/.*y.*/)
     q = q.replace(
-        new RegExp(`\\s*(?:AND|OR)?\\s*\\([^)]*${esc}:[^)]*\\)`, "gi"),
+        new RegExp(`\\s*(?:AND|OR)?\\s*\\([^)]*${fieldPat}:[^)]*\\)`, "gi"),
         "",
     );
 
@@ -98,10 +101,10 @@ function removeFieldFromQuery(q, field) {
     //    value = regex /.../, quoted "...", or bare word
     const val = `(?:\\/[^\\/]*\\/|"[^"]*"|\\S+)`;
     q = q.replace(
-        new RegExp(`\\s*(?:AND|OR)?\\s*NOT\\s+${esc}:${val}`, "gi"),
+        new RegExp(`\\s*(?:AND|OR)?\\s*NOT\\s+${fieldPat}:${val}`, "gi"),
         "",
     );
-    q = q.replace(new RegExp(`\\s*(?:AND|OR)?\\s*${esc}:${val}`, "gi"), "");
+    q = q.replace(new RegExp(`\\s*(?:AND|OR)?\\s*${fieldPat}:${val}`, "gi"), "");
 
     // 3. Clean up dangling operators and whitespace
     q = q
@@ -214,6 +217,33 @@ function buildClause(field, term, mode) {
     }
 }
 
+// json_payload subfields that a search term may target via a "field.value" prefix
+const PAYLOAD_SUBFIELDS = [
+    "msg",
+    "tag",
+    "loan_app_id",
+    "trace_id",
+    "span_id",
+    "level",
+];
+
+// Resolve a raw search term to { field, term }. When the base field is
+// json_payload, a "<subfield>.<value>" prefix scopes the search to that
+// nested field — e.g. "msg.notification" → json_payload.msg : notification.
+// Anything without a recognised prefix stays a plain json_payload search.
+function resolvePayloadTerm(baseField, raw) {
+    if (baseField === "json_payload") {
+        const dot = raw.indexOf(".");
+        if (dot > 0) {
+            const prefix = raw.slice(0, dot);
+            const rest = raw.slice(dot + 1).trim();
+            if (rest && PAYLOAD_SUBFIELDS.includes(prefix))
+                return { field: `json_payload.${prefix}`, term: rest };
+        }
+    }
+    return { field: baseField, term: raw };
+}
+
 function addMultiFilter({ field, terms, op, mode = "regex" }) {
     const input = findElement(SELECTORS.queryInput);
     if (!input)
@@ -222,10 +252,13 @@ function addMultiFilter({ field, terms, op, mode = "regex" }) {
             error: "Query bar not found. Make sure you're on the Discover page.",
         };
 
-    // Strip any existing clauses for this field before applying the new ones
+    // Strip any existing clauses for this field (and its subfields) first
     const stripped = removeFieldFromQuery(input.value || "", field);
 
-    const clauses = terms.map((t) => buildClause(field, t, mode));
+    const clauses = terms.map((t) => {
+        const { field: f, term } = resolvePayloadTerm(field, t);
+        return buildClause(f, term, mode);
+    });
     const group =
         clauses.length > 1 ? `(${clauses.join(` ${op} `)})` : clauses[0];
     const next = stripped ? `${stripped} AND ${group}` : group;
@@ -313,9 +346,52 @@ let cachedPayloads = []; // index → parsed json_payload (or null)
     tbody tr:not(.lf-extract-row):has(+ tr + tr.lf-extract-row) th {
       border-bottom: none !important;
     }
+    @keyframes lf-spin { to { transform: rotate(360deg); } }
   `;
     document.head.appendChild(s);
 })();
+
+// ── Loading indicator (shown while a new query / refresh loads its data) ──────
+const LOADING_ID = "lf-extract-loading";
+
+function showExtractLoading() {
+    let el = document.getElementById(LOADING_ID);
+    const th = T();
+    if (!el) {
+        el = document.createElement("div");
+        el.id = LOADING_ID;
+        const spinner = document.createElement("div");
+        spinner.className = "lf-spinner";
+        spinner.style.cssText =
+            "width:14px;height:14px;border-radius:50%;flex-shrink:0;" +
+            "animation:lf-spin 0.7s linear infinite;";
+        const txt = document.createElement("span");
+        txt.className = "lf-loading-text";
+        txt.textContent = "Loading extracted fields…";
+        el.appendChild(spinner);
+        el.appendChild(txt);
+        document.body.appendChild(el);
+    }
+    // (Re)apply theme colours each time so it matches light/dark on show
+    el.style.cssText =
+        "position:fixed;bottom:20px;right:20px;z-index:2147483647;" +
+        "display:flex;align-items:center;gap:9px;padding:10px 14px;" +
+        `background:${th.bg};color:${th.fg};border:1px solid ${th.border};` +
+        "border-radius:8px;box-shadow:0 4px 18px rgba(0,0,0,0.28);" +
+        "font-family:'Fira Code',Consolas,monospace;font-size:12px;";
+    const sp = el.querySelector(".lf-spinner");
+    if (sp)
+        sp.style.border = `2px solid ${th.sep}`,
+            (sp.style.borderTopColor = th.border);
+
+    // Safety net: never spin forever if data never arrives
+    clearTimeout(el._lfHideT);
+    el._lfHideT = setTimeout(hideExtractLoading, 20000);
+}
+
+function hideExtractLoading() {
+    document.getElementById(LOADING_ID)?.remove();
+}
 
 function purgeOverlays() {
     document
@@ -330,9 +406,13 @@ function purgeOverlays() {
 window.addEventListener("message", (e) => {
     if (e.source !== window) return;
 
-    // Navigation / query change → clear boxes right away
     if (e.data?.type === "__LF_NAV__") {
-        if (activeFields.length) purgeOverlays();
+        if (!activeFields.length) return;
+        // New query / refresh / time change: keep the extractor applied, drop
+        // the now-stale overlays and show a loading indicator. The incoming
+        // __LF_HITS__ (fresh data) re-renders the overlays and hides it.
+        purgeOverlays();
+        showExtractLoading();
         return;
     }
 });
@@ -342,9 +422,12 @@ window.addEventListener("message", (e) => {
     cachedPayloads = e.data.payloads || [];
     // New search response → purge stale overlays so rows re-render with fresh data
     if (activeFields.length) {
+        showExtractLoading();
         purgeOverlays();
         clearTimeout(window._lfTimer);
-        window._lfTimer = setTimeout(() => processTableRows(activeFields), 400);
+        window._lfTimer = setTimeout(() => {
+            if (processTableRows(activeFields) > 0) hideExtractLoading();
+        }, 400);
     }
 });
 
@@ -1056,7 +1139,9 @@ function startExtract(fields) {
         if (!relevant) return; // only our own DOM churned — skip reprocessing
 
         clearTimeout(window._lfTimer);
-        window._lfTimer = setTimeout(() => processTableRows(activeFields), 300);
+        window._lfTimer = setTimeout(() => {
+            if (processTableRows(activeFields) > 0) hideExtractLoading();
+        }, 300);
     });
     extractObserver.observe(document.body, { childList: true, subtree: true });
 
@@ -1069,6 +1154,7 @@ function stopExtract() {
         extractObserver.disconnect();
         extractObserver = null;
     }
+    hideExtractLoading();
     document
         .querySelectorAll(`.${EXTRACT_ROW_CLASS}`)
         .forEach((el) => el.remove());
