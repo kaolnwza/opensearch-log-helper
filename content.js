@@ -39,6 +39,28 @@ const SIDEBAR_SELECTED_LIST = [
     '[data-test-subj="discoverFieldListSelected"]',
 ];
 
+// ── Is this actually OpenSearch Dashboards? ───────────────────────────────────
+// The loose query-bar selectors above match a search box on half the web, so
+// nothing is injected until one of these OpenSearch-only markers shows up.
+const OSD_MARKERS = [
+    '[data-test-subj="queryInput"]',
+    '[data-test-subj="globalQueryBar"]',
+    '[data-test-subj="discoverChart"]',
+    ".osdQueryBar",
+    ".kbnQueryBar",
+    "#opensearch-dashboards-body",
+    "#osdAppWrapper",
+    ".dscCanvas",
+    ".dscTimechart",
+].join(",");
+
+function isOpenSearchPage() {
+    return (
+        Boolean(document.querySelector(OSD_MARKERS)) ||
+        /opensearch dashboards|kibana/i.test(document.title || "")
+    );
+}
+
 function findElement(selectorList) {
     for (const sel of selectorList) {
         const el = document.querySelector(sel);
@@ -537,6 +559,7 @@ function showExtractLoading() {
     if (!el) {
         el = document.createElement("div");
         el.id = LOADING_ID;
+        el.classList.add("lf-ui");
         const spinner = document.createElement("div");
         spinner.className = "lf-spinner";
         spinner.style.cssText =
@@ -859,7 +882,7 @@ function resolveSpec(spec, parsed, regexResult) {
 function buildOverlay(parsed, regexResult, specs, rawJson) {
     const th = T();
     const wrap = document.createElement("div");
-    wrap.className = EXTRACT_CLASS;
+    wrap.className = `${EXTRACT_CLASS} lf-ui`;
     wrap.style.cssText =
         `margin:0;padding:0;background:${th.bg};` +
         `border-left:4px solid ${th.border};border-radius:0 6px 6px 0;` +
@@ -1120,7 +1143,7 @@ function insertOverlayAfterRow(row, overlay, fieldKey) {
         next.remove();
     }
     const tr = document.createElement("tr");
-    tr.className = EXTRACT_ROW_CLASS;
+    tr.className = `${EXTRACT_ROW_CLASS} lf-ui`;
     tr.dataset.lfKey = fieldKey;
     tr.style.cssText = "background:transparent;border:none;line-height:0;";
     const td = document.createElement("td");
@@ -1401,11 +1424,10 @@ async function autoApply() {
     if (!extractAuto || !extractFields?.length) return;
 
     autoPending = true;
-    // The content script runs on every page — the query bar is what says this
-    // is actually Discover. Nothing is shown until it turns up, so other sites
-    // never see a stray spinner.
+    // Wait for OpenSearch specifically, then for its query bar — on any other
+    // site neither turns up, so nothing is ever drawn (not even a spinner).
     const isDiscover = await waitFor(
-        () => findElement(SELECTORS.queryInput),
+        () => isOpenSearchPage() && findElement(SELECTORS.queryInput),
         10000,
         300,
     );
@@ -1460,6 +1482,7 @@ function lfToast(text, ms = 2200) {
     if (!el) {
         el = document.createElement("div");
         el.id = "lf-toast";
+        el.classList.add("lf-ui");
         document.body.appendChild(el);
     }
     el.textContent = text;
@@ -1859,27 +1882,65 @@ function paintEditor() {
 // Put the query in OpenSearch's bar and submit it — without ever focusing that
 // box. Focusing it opens the recent-searches list, and the Enter key we used to
 // send would then pick a history entry instead of running what we just wrote.
-function pushQueryToBar(input, clean) {
-    setNativeValue(input, clean);
-    input.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Escape", keyCode: 27, bubbles: true }),
-    );
-    input.blur?.();
+// Did the search actually run with our query? Discover keeps the applied query
+// in the URL (`_q=(query:(…))`), so a distinctive word from it has to show up
+// there. Builds that keep their state elsewhere are given the benefit of doubt.
+function queryLanded(clean) {
+    let url = location.href;
+    try {
+        url = decodeURIComponent(url);
+    } catch {}
+    if (!url.includes("query:")) return true;
+    const word = (clean.match(/[A-Za-z0-9_]{4,}/g) || []).sort(
+        (a, b) => b.length - a.length,
+    )[0];
+    return !word || url.includes(word);
+}
 
-    setTimeout(() => {
-        const btn =
-            document.querySelector('[data-test-subj="querySubmitButton"]') ||
-            document.querySelector('button[aria-label="Search"]') ||
-            document.querySelector("form.osdQueryBar button[type='submit']");
+function pushQueryToBar(input, clean) {
+    const submitBtn = () =>
+        document.querySelector('[data-test-subj="querySubmitButton"]') ||
+        document.querySelector('button[aria-label="Search"]') ||
+        document.querySelector("form.osdQueryBar button[type='submit']");
+
+    const fire = () => {
+        // Re-apply if the page put its own text back (a stale draft would be
+        // submitted instead, which is what made the first ⌘↵ look ignored).
+        if (input.value !== clean) setNativeValue(input, clean);
+        const btn = submitBtn();
         if (btn) return btn.click();
         // No submit button on this build — Enter is the only way left
         for (const type of ["keydown", "keyup"])
             input.dispatchEvent(
                 new KeyboardEvent(type, { key: "Enter", keyCode: 13, bubbles: true }),
             );
-    }, 60);
+    };
 
-    setTimeout(() => editorTA?.focus(), 400); // keep typing where you were
+    setNativeValue(input, clean);
+
+    // Only touch focus if the page put it there — an Escape or blur on a box we
+    // never focused can make OpenSearch revert the draft we just wrote.
+    if (document.activeElement === input) {
+        input.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Escape", keyCode: 27, bubbles: true }),
+        );
+        input.blur?.();
+    }
+
+    // Two frames, then a beat: React re-renders the submit control around the
+    // new query, and clicking before that commit submits the *previous* one.
+    requestAnimationFrame(() =>
+        requestAnimationFrame(() => setTimeout(fire, 120)),
+    );
+
+    // The automatic second press: if the bar no longer holds our query, or the
+    // search that ran was not ours, run it again rather than making you retype.
+    setTimeout(() => {
+        if (!input.isConnected) return;
+        if (input.value !== clean || !queryLanded(clean)) fire();
+    }, 700);
+
+    setTimeout(() => editorTA?.focus(), 800); // keep typing where you were
 }
 
 function runEditorQuery() {
@@ -2084,6 +2145,7 @@ function renderSuggest() {
     if (!box) {
         box = document.createElement("div");
         box.id = SUGGEST_ID;
+        box.classList.add("lf-ui");
         document.body.appendChild(box);
     }
     box.textContent = "";
@@ -2224,6 +2286,7 @@ function buildEditor() {
             "font-family:'Fira Code',Consolas,monospace;font-size:13px;",
     );
     box.id = EDITOR_ID;
+    box.classList.add("lf-ui");
 
     // ── Toolbar ──────────────────────────────────────────────────────────────
     const bar = el(
@@ -2507,6 +2570,184 @@ function setFilterBarHidden(on) {
     applyFilterBarHidden();
 }
 
+// ── Whole-page dark mode ──────────────────────────────────────────────────────
+// A stylesheet, not a CSS filter: `filter: invert()` on the root repaints the
+// whole page on every scroll, which is exactly what hurts on a 500-row table.
+// One <style> tag, no per-element work, nothing to re-apply on re-render.
+const DARK_STYLE_ID = "lf-dark-style";
+const PAGE_DARK_KEY = "lf_page_dark";
+
+let pageDark = false;
+try {
+    pageDark = localStorage.getItem(PAGE_DARK_KEY) === "1";
+} catch {}
+
+// Our own UI themes itself through T() — keep the page rules off it entirely
+const NOT_OURS = ":not(.lf-ui):not(.lf-ui *)";
+
+const DARK = {
+    bg: "#21222c",
+    surface: "#282a36",
+    raised: "#2f313f",
+    field: "#1e1f29",
+    text: "#e2e4ec",
+    muted: "#a5adc4",
+    border: "#44475a",
+    line: "#33354a",
+    link: "#8be9fd",
+};
+
+const DARK_SURFACE = [
+    ".euiPage", ".euiPageBody", ".euiPageContent", ".euiPanel", ".euiHeader",
+    ".euiHeaderSection", ".headerGlobalNav", ".euiCard", ".euiAccordion",
+    ".euiTabs", ".euiTab", ".euiCollapsibleNav", ".euiSideNav", ".euiFlyout",
+    ".dscSideBar", ".dscCanvas", ".dscAppContainer", ".application", "main",
+];
+const DARK_RAISED = [
+    ".euiPopover__panel", ".euiContextMenuPanel", ".euiContextMenuItem",
+    ".euiModal", ".euiToolTip", ".euiSelectableList", ".euiSelectableListItem",
+    ".euiComboBoxOptionsList", ".euiSuperDatePicker", ".euiDatePopoverButton",
+];
+const DARK_FIELD = [
+    "input", "textarea", "select", ".euiFieldText", ".euiFieldSearch",
+    ".euiTextArea", ".euiSelect", ".euiComboBox__inputWrap",
+    ".euiFormControlLayout", ".euiFormControlLayout__childrenWrapper",
+    ".euiFilterButton", ".euiButtonEmpty",
+];
+const DARK_TABLE = [
+    "table", "thead", "tbody", "tr", "td", "th", ".euiTable", ".euiTableRow",
+    ".euiTableRowCell", ".euiTableHeaderCell", ".osdDocTable", ".kbnDocTable",
+    ".euiDataGrid", ".euiDataGridRowCell", ".euiDataGridHeaderCell",
+];
+
+const darkRule = (selectors, body) =>
+    `${selectors.map((s) => `html.lf-dark ${s}${NOT_OURS}`).join(",")}{${body}}`;
+
+function darkCss() {
+    const d = DARK;
+    return [
+        `html.lf-dark,html.lf-dark body{background:${d.bg} !important;color:${d.text} !important;}`,
+        darkRule(DARK_SURFACE, `background-color:${d.surface} !important;color:${d.text} !important;border-color:${d.border} !important;`),
+        darkRule(DARK_RAISED, `background-color:${d.raised} !important;color:${d.text} !important;border-color:${d.border} !important;`),
+        darkRule(DARK_FIELD, `background-color:${d.field} !important;color:${d.text} !important;border-color:${d.border} !important;`),
+        darkRule(DARK_TABLE, `background-color:transparent !important;color:${d.text} !important;border-color:${d.line} !important;`),
+        darkRule(["a"], `color:${d.link} !important;`),
+        darkRule([".euiTitle", ".euiText", "h1", "h2", "h3", "h4", "label", ".euiFormLabel"], `color:${d.text} !important;`),
+        darkRule([".euiTextColor--subdued", ".euiFormHelpText", "small"], `color:${d.muted} !important;`),
+        darkRule(["svg text"], `fill:${d.muted} !important;`),
+        `html.lf-dark ::-webkit-scrollbar{background:${d.bg};}`,
+        `html.lf-dark ::-webkit-scrollbar-thumb{background:${d.border};border-radius:6px;}`,
+    ].join("\n");
+}
+
+// OpenSearch ships its own dark build of every stylesheet next to the light one
+// (…v7.light.css → …v7.dark.css). Swapping the <link> is the whole page turned
+// dark by the app itself: complete coverage, and the browser just uses a
+// different file — no filter, no extra paint work, nothing running per frame.
+const swappedLinks = new WeakSet();
+const disabledLinks = [];
+let darkLoaded = false; // a real dark bundle took over
+
+// Fallback for builds that ship no dark stylesheet (or name it something we
+// can't guess): make every element inherit the dark page background instead of
+// listing class names we'd never finish enumerating. One universal rule costs a
+// single style recalc — unlike `filter: invert()`, nothing runs while scrolling.
+const FALLBACK_STYLE_ID = "lf-dark-fallback";
+
+function darkFallbackCss() {
+    const d = DARK;
+    return [
+        `html.lf-dark *${NOT_OURS}{background-color:inherit !important;color:inherit !important;border-color:${d.line} !important;}`,
+        `html.lf-dark,html.lf-dark body{background-color:${d.bg} !important;color:${d.text} !important;}`,
+        darkRule([...DARK_SURFACE, "thead", ".euiHeader"], `background-color:${d.surface} !important;`),
+        darkRule(DARK_RAISED, `background-color:${d.raised} !important;`),
+        darkRule(DARK_FIELD, `background-color:${d.field} !important;`),
+        darkRule(["a", "a *"], `color:${d.link} !important;`),
+        darkRule(["img", "canvas", "video", "embed", "object"], `background-color:transparent !important;`),
+    ].join("\n");
+}
+
+function injectDarkFallback() {
+    if (document.getElementById(FALLBACK_STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = FALLBACK_STYLE_ID;
+    style.textContent = darkFallbackCss();
+    document.head.appendChild(style);
+}
+
+function darkenStylesheets() {
+    document.querySelectorAll('link[rel="stylesheet"]').forEach((link) => {
+        const href = link.getAttribute("href") || "";
+        if (swappedLinks.has(link) || !/light/i.test(href)) return;
+        swappedLinks.add(link);
+
+        const darkHref = href.replace(/light/gi, (m) =>
+            m[0] === "L" ? "Dark" : "dark",
+        );
+        const dark = document.createElement("link");
+        dark.rel = "stylesheet";
+        dark.href = darkHref;
+        dark.dataset.lfDark = "1";
+        // Only drop the light one once the dark one has actually loaded, so a
+        // build without a dark bundle is left exactly as it was.
+        dark.onload = () => {
+            link.disabled = true;
+            disabledLinks.push(link);
+            darkLoaded = true;
+            // The app's own theme is better than anything we can force
+            document.getElementById(FALLBACK_STYLE_ID)?.remove();
+        };
+        dark.onerror = () => dark.remove();
+        link.after(dark); // after, so it also wins the cascade
+    });
+
+    // Some builds theme through a body class instead of (or as well as) the file
+    const body = document.body;
+    if (body && /(^|\s)theme-light(\s|$)/.test(body.className))
+        body.classList.replace("theme-light", "theme-dark");
+}
+
+function restoreStylesheets() {
+    document.querySelectorAll("link[data-lf-dark]").forEach((l) => l.remove());
+    while (disabledLinks.length) disabledLinks.pop().disabled = false;
+    if (document.body?.classList.contains("theme-dark"))
+        document.body.classList.replace("theme-dark", "theme-light");
+}
+
+function applyPageDark() {
+    document.documentElement.classList.toggle("lf-dark", pageDark);
+
+    if (!pageDark) {
+        restoreStylesheets();
+        darkLoaded = false;
+        document.getElementById(DARK_STYLE_ID)?.remove();
+        document.getElementById(FALLBACK_STYLE_ID)?.remove();
+        return;
+    }
+
+    darkenStylesheets();
+
+    if (!document.getElementById(DARK_STYLE_ID)) {
+        const style = document.createElement("style");
+        style.id = DARK_STYLE_ID;
+        style.textContent = darkCss();
+        document.head.appendChild(style);
+    }
+
+    // No dark bundle showed up in time → force it, so nothing is left white
+    setTimeout(() => {
+        if (pageDark && !darkLoaded) injectDarkFallback();
+    }, 1200);
+}
+
+function setPageDark(on) {
+    pageDark = on;
+    try {
+        localStorage.setItem(PAGE_DARK_KEY, on ? "1" : "0");
+    } catch {}
+    applyPageDark();
+    setTheme(on ? "dark" : "light"); // keep our own panels in step
+}
 
 function mountChartToggle() {
     const chart = findChart();
@@ -2522,6 +2763,7 @@ function mountChartToggle() {
                 "font-family:'Fira Code',Consolas,monospace;font-size:11px;",
         );
         btn.id = CHART_BTN_ID;
+        btn.classList.add("lf-ui");
         btn.type = "button";
         btn.title = "Collapse the count-per-hour histogram";
         btn.addEventListener("click", () => {
@@ -2544,6 +2786,8 @@ function watchQueryBar() {
         // Re-inject only if the page dropped our stylesheet
         if (filterBarHidden && !document.getElementById(CHROME_STYLE_ID))
             applyFilterBarHidden();
+        // Lazily loaded chunks bring their own light CSS — catch those too
+        if (pageDark) darkenStylesheets();
     };
     tick();
     setInterval(tick, 1000);
@@ -2781,6 +3025,7 @@ function openPanel() {
             "font-family:'Fira Code',Consolas,monospace;font-size:12px;overflow:hidden;",
     );
     panel.id = PANEL_ID;
+    panel.classList.add("lf-ui");
 
     // ── Header (drag to move) ────────────────────────────────────────────────
     const head = el(
@@ -2999,6 +3244,7 @@ function openPanel() {
         row.appendChild(el("span", "", label));
         body.appendChild(row);
     };
+    check("Dark mode (whole page)", pageDark, setPageDark);
     check("Hide the “Add filter” bar", filterBarHidden, setFilterBarHidden);
 
     body.appendChild(
@@ -3069,6 +3315,7 @@ function mountLauncher() {
         "⌗ Fields",
     );
     b.id = LAUNCH_ID;
+    b.classList.add("lf-ui");
     b.title = "JSON field extractor";
     b.addEventListener("click", togglePanel);
     document.body.appendChild(b);
@@ -3092,10 +3339,17 @@ window.addEventListener("message", (e) => {
 });
 
 // ── Page UI bootstrap ─────────────────────────────────────────────────────────
-// The content script runs everywhere; the query bar is what makes this Discover.
+// The content script can still land on a non-OpenSearch page, so every piece of
+// UI below waits for an OpenSearch marker *and* its query bar. On any other site
+// this resolves to nothing and the extension stays completely invisible.
 (async function initPageUI() {
-    const ta = await waitFor(() => findElement(SELECTORS.queryInput), 20000, 400);
+    const ta = await waitFor(
+        () => isOpenSearchPage() && findElement(SELECTORS.queryInput),
+        20000,
+        400,
+    );
     if (!ta) return;
+    applyPageDark();
     watchQueryBar();
     mountLauncher();
     let open = "0";
