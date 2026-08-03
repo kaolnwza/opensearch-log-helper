@@ -190,6 +190,7 @@
       <button id="btn-clear-extract" class="btn-clear-section" title="Stop and clear">✕ Clear</button>
     </div>
     <p class="hint">Extracts fields from <code>json_payload</code> cells inline — also resolves table columns like <code>kubernetes.container_name</code></p>
+    <p class="hint">Or pick fields straight from the logs with the <code>⌗ Fields</code> button on the OpenSearch page</p>
 
     <!-- Presets -->
     <div class="row" style="margin-bottom:7px;">
@@ -207,6 +208,10 @@
     <div class="row mt4">
       <button id="btn-extract-apply" class="btn btn-primary full-width">Apply to Table</button>
     </div>
+    <label class="check-row mt4" title="Re-applies the saved fields on every page load and query change">
+      <input id="chk-extract-auto" type="checkbox" />
+      <span>Auto-apply on every page load / query</span>
+    </label>
     <div class="row mt4" style="gap:6px;">
       <button id="btn-extract-stop" class="btn btn-secondary full-width">Stop</button>
       <button id="btn-hide-col" class="btn btn-secondary full-width">🙈 Hide Column</button>

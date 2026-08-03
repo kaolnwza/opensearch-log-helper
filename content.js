@@ -23,6 +23,22 @@ const SELECTORS = {
     ],
 };
 
+// Query-bar language switcher (DQL ⇄ Lucene)
+const LANG_SWITCH_BUTTON = [
+    '[data-test-subj="switchQueryLanguageButton"]',
+    '[data-test-subj="queryBarLanguageSwitcherPopover"] button',
+    ".osdQueryBar__languageSwitcherPopover button",
+    ".kbnQueryBar__languageSwitcherPopover button",
+];
+
+const LANG_MENU_ITEM = ".euiContextMenuItem, [role='menuitem'], .euiSelectableListItem";
+
+// Discover sidebar field lists
+const SIDEBAR_SELECTED_LIST = [
+    '[data-test-subj="fieldList-selected"]',
+    '[data-test-subj="discoverFieldListSelected"]',
+];
+
 function findElement(selectorList) {
     for (const sel of selectorList) {
         const el = document.querySelector(sel);
@@ -269,6 +285,167 @@ function addMultiFilter({ field, terms, op, mode = "regex" }) {
     return { ok: true };
 }
 
+// ── Query language ────────────────────────────────────────────────────────────
+
+// Poll fn until it returns something truthy (the popover / sidebar renders async)
+function waitFor(fn, timeout = 2000, interval = 60) {
+    return new Promise((resolve) => {
+        const t0 = Date.now();
+        (function tick() {
+            const v = fn();
+            if (v) return resolve(v);
+            if (Date.now() - t0 >= timeout) return resolve(null);
+            setTimeout(tick, interval);
+        })();
+    });
+}
+
+// The switcher button's label is the language currently in use: "Lucene", or
+// "DQL"/"KQL" for kuery.
+function currentLanguage(btn) {
+    return (btn.textContent || "").trim().toLowerCase();
+}
+
+// Variant A — popover with one menu item per language.
+function findLanguageMenuItem(language) {
+    const direct = document.querySelector(
+        `[data-test-subj="${language}LanguageMenuItem"]`,
+    );
+    if (direct) return direct;
+    return (
+        [...document.querySelectorAll(LANG_MENU_ITEM)].find(
+            (el) => el.textContent.trim().toLowerCase() === language,
+        ) || null
+    );
+}
+
+// Variant B — popover with an EuiSwitch ("Turn on DQL"): on = kuery, off =
+// lucene. EUI renders it as a role="switch" button or a checkbox input.
+function findLanguageToggle() {
+    return (
+        document.querySelector('[data-test-subj="languageToggle"]') ||
+        document.querySelector('[data-test-subj="queryEnhancementOptIn"]') ||
+        document.querySelector(
+            '.euiPopover__panel [role="switch"], .euiPopover__panel .euiSwitch__input',
+        )
+    );
+}
+
+function toggleIsOn(el) {
+    return el.getAttribute("aria-checked") === "true" || el.checked === true;
+}
+
+// Variant C — popover with a <select> of languages.
+function findLanguageSelect(language) {
+    const sel = document.querySelector(
+        '.euiPopover__panel select, [data-test-subj="queryEditorLanguageSelector"]',
+    );
+    if (!sel || sel.tagName !== "SELECT") return null;
+    const opt = [...sel.options].find(
+        (o) =>
+            o.value.toLowerCase() === language ||
+            o.textContent.trim().toLowerCase() === language,
+    );
+    return opt ? { sel, value: opt.value } : null;
+}
+
+async function setQueryLanguage({ language = "lucene" }) {
+    const btn = findElement(LANG_SWITCH_BUTTON);
+    if (!btn) return { ok: false, error: "Language switcher not found." };
+    if (currentLanguage(btn) === language) return { ok: true, changed: false };
+
+    btn.click(); // open the popover
+
+    const found = await waitFor(() => {
+        const item = findLanguageMenuItem(language);
+        if (item) return { kind: "item", el: item };
+        const select = findLanguageSelect(language);
+        if (select) return { kind: "select", ...select };
+        const toggle = findLanguageToggle();
+        if (toggle) return { kind: "toggle", el: toggle };
+        return null;
+    });
+
+    if (!found) {
+        btn.click(); // close the popover we opened
+        return { ok: false, error: "No language control in the popover." };
+    }
+
+    if (found.kind === "item") {
+        found.el.click();
+    } else if (found.kind === "select") {
+        setNativeValue(found.sel, found.value);
+    } else {
+        // Toggle on means kuery/DQL — only click when we need it off for Lucene.
+        const wantOn = language !== "lucene";
+        if (toggleIsOn(found.el) !== wantOn) found.el.click();
+    }
+
+    // Confirm via the button label rather than trusting the click landed.
+    const ok = await waitFor(() => currentLanguage(btn) === language, 1500);
+    if (!ok) return { ok: false, error: `Still on "${currentLanguage(btn)}".` };
+
+    // The popover stays open on the toggle/select variants.
+    if (document.querySelector(".euiPopover__panel")) btn.click();
+    return { ok: true, changed: true };
+}
+
+// ── Discover sidebar fields ───────────────────────────────────────────────────
+
+function isFieldSelected(name) {
+    const list = findElement(SIDEBAR_SELECTED_LIST);
+    if (!list) return false;
+    return Boolean(
+        list.querySelector(`[data-test-subj="field-${name}"]`) ||
+            [...list.querySelectorAll('[data-test-subj^="field-"]')].some(
+                (el) => el.textContent.trim() === name,
+            ),
+    );
+}
+
+// The add/remove toggle for a sidebar field — it's in the DOM even when the
+// hover styling hides it.
+function findFieldToggle(name) {
+    const direct = document.querySelector(
+        `[data-test-subj="fieldToggle-${name}"]`,
+    );
+    if (direct) return direct;
+
+    const row =
+        document.querySelector(`[data-test-subj="field-${name}"]`) ||
+        [...document.querySelectorAll('[data-test-subj^="field-"]')].find(
+            (el) => el.textContent.trim() === name,
+        );
+    if (!row) return null;
+    const scope = row.closest("li") || row.parentElement;
+    return (
+        scope?.querySelector(
+            'button[data-test-subj^="fieldToggle"],' +
+                'button[aria-label*="Add"],button[title*="Add"]',
+        ) || null
+    );
+}
+
+// Move fields from "Available fields" into "Selected fields" (no-op per field
+// that's already selected).
+async function selectFields({ fields = [] }) {
+    const added = [];
+    const missing = [];
+    for (const name of fields) {
+        if (isFieldSelected(name)) continue;
+        const toggle = await waitFor(() => findFieldToggle(name), 1500);
+        if (!toggle) {
+            missing.push(name);
+            continue;
+        }
+        toggle.click();
+        added.push(name);
+    }
+    if (missing.length && !added.length)
+        return { ok: false, error: `Field not found: ${missing.join(", ")}` };
+    return { ok: true, added, missing };
+}
+
 // ── JSON Field Extractor ──────────────────────────────────────────────────────
 const EXTRACT_CLASS = "lf-extract-overlay";
 const EXTRACT_ROW_CLASS = "lf-extract-row";
@@ -373,8 +550,9 @@ function showExtractLoading() {
         document.body.appendChild(el);
     }
     // (Re)apply theme colours each time so it matches light/dark on show
+    // (right:150px keeps it clear of the panel launcher in the corner)
     el.style.cssText =
-        "position:fixed;bottom:20px;right:20px;z-index:2147483647;" +
+        "position:fixed;bottom:20px;right:150px;z-index:2147483647;" +
         "display:flex;align-items:center;gap:9px;padding:10px 14px;" +
         `background:${th.bg};color:${th.fg};border:1px solid ${th.border};` +
         "border-radius:8px;box-shadow:0 4px 18px rgba(0,0,0,0.28);" +
@@ -465,6 +643,11 @@ const THEMES = {
         jsonFg: "#282a36",
         toggle: "#6272a4",
         handle: "#6272a4",
+        comment: "#5c9e5c", // commented-out query lines
+        opEq: "#2e7d32", // =  (exact term)
+        opRe: "#7a5af8", // =~ (regex), same colour as a /regex/ literal
+        // Translucent so the coloured text under the textarea stays readable
+        selBg: "rgba(98,114,164,0.28)",
         // syntax
         key: "#0070b8",
         str: "#bf3939",
@@ -486,6 +669,10 @@ const THEMES = {
         jsonFg: "#f8f8f2",
         toggle: "#6272a4",
         handle: "#bd93f9",
+        comment: "#6272a4", // commented-out query lines
+        opEq: "#50fa7b", // =  (exact term)
+        opRe: "#bd93f9", // =~ (regex), same colour as a /regex/ literal
+        selBg: "rgba(189,147,249,0.35)",
         // syntax
         key: "#8be9fd",
         str: "#f1fa8c",
@@ -1068,8 +1255,11 @@ function processTableRows(fields) {
 // ── Hide / show a table column by field name ──────────────────────────────
 const HIDE_STYLE_ID = "lf-hide-col-style";
 
-// fields: array of column name substrings to hide (e.g. ["Time","kubernetes.container_name","json_payload"])
-function hideColumns({ fields = [] }) {
+// Columns the extractor overlays replace — hidden while extraction is running
+const HIDE_FIELDS = ["Time", "kubernetes.container_name", "json_payload"];
+
+// fields: column name substrings to hide; defaults to the ones the overlays replace
+function hideColumns({ fields = HIDE_FIELDS }) {
     document.getElementById(HIDE_STYLE_ID)?.remove();
 
     const headers = [
@@ -1148,6 +1338,26 @@ function startExtract(fields) {
     return { ok: true, found };
 }
 
+// Extraction reads json_payload out of the table, so it has to be a selected
+// column first — it gets hidden again right after via HIDE_FIELDS.
+const REQUIRED_FIELDS = ["json_payload"];
+
+// Full "Apply to Table" sequence: prepare the page (Lucene + json_payload
+// column), start extracting, then hide the columns the overlays replace.
+// Neither prep step is fatal — extraction still works off the intercepted cache.
+async function applyExtract({ fields = [] }) {
+    if (!fields.length) return { ok: false, error: "No fields given" };
+
+    const lang = await setQueryLanguage({ language: "lucene" });
+    const sel = await selectFields({ fields: REQUIRED_FIELDS });
+    if (lang.changed || sel.added?.length)
+        await new Promise((r) => setTimeout(r, 400)); // let the table re-render
+
+    const res = startExtract(fields);
+    hideColumns({});
+    return { ...res, lang };
+}
+
 function stopExtract() {
     activeFields = [];
     if (extractObserver) {
@@ -1164,6 +1374,1613 @@ function stopExtract() {
         .forEach((el) => el.removeAttribute("data-lf-key"));
     return { ok: true };
 }
+
+// ── Auto-apply ────────────────────────────────────────────────────────────────
+// With auto mode on, the saved fields are applied as soon as the results table
+// renders — on page load and on SPA navigation — so "Apply to Table" only has
+// to be clicked once, ever.
+let autoPending = false;
+
+function readStored(keys) {
+    return new Promise((resolve) => {
+        try {
+            chrome.storage.local.get(keys, (d) => resolve(d || {}));
+        } catch {
+            resolve({});
+        }
+    });
+}
+
+async function autoApply() {
+    if (autoPending || activeFields.length) return;
+
+    const { extractAuto, extractFields } = await readStored([
+        "extractAuto",
+        "extractFields",
+    ]);
+    if (!extractAuto || !extractFields?.length) return;
+
+    autoPending = true;
+    // The content script runs on every page — the query bar is what says this
+    // is actually Discover. Nothing is shown until it turns up, so other sites
+    // never see a stray spinner.
+    const isDiscover = await waitFor(
+        () => findElement(SELECTORS.queryInput),
+        10000,
+        300,
+    );
+    if (!isDiscover) {
+        autoPending = false;
+        return;
+    }
+
+    // Rows land a moment after the query bar.
+    showExtractLoading();
+    const ready = await waitFor(
+        () => document.querySelector("tbody tr"),
+        15000,
+        300,
+    );
+    autoPending = false;
+
+    // Bail if the user applied/stopped by hand while we were waiting.
+    if (!ready || activeFields.length) return hideExtractLoading();
+
+    const res = await applyExtract({ fields: extractFields });
+    if (res.found > 0) hideExtractLoading();
+}
+
+autoApply();
+window.addEventListener("message", (e) => {
+    if (e.source === window && e.data?.type === "__LF_NAV__") autoApply();
+});
+
+// ── Theme switching ───────────────────────────────────────────────────────────
+function setTheme(theme) {
+    activeTheme = theme || "light";
+    try {
+        localStorage.setItem("lf_theme", activeTheme);
+    } catch {}
+    if (activeFields.length) {
+        stopExtract();
+        setTimeout(() => startExtract(activeFields), 50);
+    }
+    if (document.getElementById(PANEL_ID)) {
+        closePanel();
+        openPanel();
+    }
+    rebuildEditor(); // the query editor's colours are theme-dependent
+    return { ok: true };
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function lfToast(text, ms = 2200) {
+    const th = T();
+    let el = document.getElementById("lf-toast");
+    if (!el) {
+        el = document.createElement("div");
+        el.id = "lf-toast";
+        document.body.appendChild(el);
+    }
+    el.textContent = text;
+    el.style.cssText =
+        "position:fixed;bottom:20px;left:50%;transform:translateX(-50%);" +
+        "z-index:2147483647;padding:9px 14px;border-radius:8px;" +
+        `background:${th.bg};color:${th.fg};border:1px solid ${th.border};` +
+        "box-shadow:0 4px 18px rgba(0,0,0,0.28);" +
+        "font-family:'Fira Code',Consolas,monospace;font-size:12px;";
+    clearTimeout(el._t);
+    el._t = setTimeout(() => el.remove(), ms);
+}
+
+// ── Query editor ──────────────────────────────────────────────────────────────
+// OpenSearch's own query bar grabs the arrow keys for its history/suggestion
+// popup, which makes editing a long query miserable. So the query is written in
+// our own box instead — a syntax-coloured code block that supports comment
+// lines — and only the cleaned, single-line query is pushed into their bar.
+
+const QUERY_SRC_KEY = "lf_query_src";
+const EDITOR_H_KEY = "lf_editor_height";
+const EDITOR_ID = "lf-editor";
+const EDITOR_STYLE_ID = "lf-editor-style";
+const DEFAULT_EDITOR_H = 120;
+
+let editorHeight = Number(localStorage.getItem(EDITOR_H_KEY)) || DEFAULT_EDITOR_H;
+let editorBox = null; // the whole editor
+let editorTA = null; // our textarea
+let editorPre = null; // the colour layer under it
+let editorMirror = null; // hidden copy used to locate the caret on screen
+
+function queryBarEl() {
+    return findElement(SELECTORS.queryInput);
+}
+
+// ── Comments ─────────────────────────────────────────────────────────────────
+// Cut a line at its first comment marker, ignoring markers inside "quoted
+// strings" and /regex/ literals (so http:// and /.*a.*/ stay intact).
+function stripLineComment(line) {
+    let quoted = false;
+    let inRegex = false;
+    for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+        const n = line[i + 1];
+        if (c === "\\") {
+            i++;
+            continue;
+        }
+        if (quoted) {
+            if (c === '"') quoted = false;
+            continue;
+        }
+        if (inRegex) {
+            if (c === "/") inRegex = false;
+            continue;
+        }
+        if (c === '"') {
+            quoted = true;
+            continue;
+        }
+        if (c === "/" && line[i - 1] === ":") {
+            inRegex = true;
+            continue;
+        }
+        if ((c === "-" && n === "-") || (c === "/" && n === "/") || c === "#")
+            return line.slice(0, i);
+    }
+    return line;
+}
+
+// Multi-line annotated query → the single-line query OpenSearch runs
+function stripQueryComments(text) {
+    return text
+        .split("\n")
+        .map((l) => stripLineComment(l).trim())
+        .filter(Boolean)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+// ── Shorthand operators ──────────────────────────────────────────────────────
+//   field="value"   → field:"value"          (exact term)
+//   field=~"value"  → field:/.*value.*/      (contains, regex)
+// The value may be bare too: level=ERROR, msg=~nil.
+const SUGAR_RE =
+    /([A-Za-z_@][\w.@-]*)\s*(=~|=)\s*("(?:\\.|[^"\\])*"|[^\s()]+)/g;
+
+// Character ranges covered by "strings" and /regex/ literals — a shorthand
+// operator inside one of those is just text, e.g. msg:"a=b".
+function protectedRanges(s) {
+    const out = [];
+    let i = 0;
+    while (i < s.length) {
+        const c = s[i];
+        const isString = c === '"';
+        const isRegex = c === "/" && s[i - 1] === ":";
+        if (!isString && !isRegex) {
+            i++;
+            continue;
+        }
+        const close = isString ? '"' : "/";
+        const start = i++;
+        while (i < s.length && s[i] !== close) i += s[i] === "\\" ? 2 : 1;
+        out.push([start, i]);
+        i++;
+    }
+    return out;
+}
+
+function compileQuerySugar(q) {
+    const ranges = protectedRanges(q);
+    let out = "";
+    let last = 0;
+    let m;
+    SUGAR_RE.lastIndex = 0;
+    while ((m = SUGAR_RE.exec(q))) {
+        if (ranges.some(([a, b]) => m.index > a && m.index < b)) continue;
+        const [full, field, op, raw] = m;
+        const val =
+            raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw;
+        out +=
+            q.slice(last, m.index) +
+            (op === "=~"
+                ? `${field}:/.*${val.replace(/\//g, "\\/")}.*/`
+                : `${field}:"${val}"`);
+        last = m.index + full.length;
+    }
+    return out + q.slice(last);
+}
+
+function countCommentLines(text) {
+    return text
+        .split("\n")
+        .filter((l) => l.trim() && stripLineComment(l).trim() !== l.trim())
+        .length;
+}
+
+// ⌘/ ⌃/ — comment out the selected lines, or uncomment them when they all
+// already are (same as an editor's toggle-comment).
+function toggleLineComment(ta) {
+    const v = ta.value;
+    const selStart = ta.selectionStart;
+    const selEnd = ta.selectionEnd;
+    const start = v.lastIndexOf("\n", selStart - 1) + 1;
+    let end = v.indexOf("\n", selEnd);
+    if (end === -1) end = v.length;
+
+    const lines = v.slice(start, end).split("\n");
+    const filled = lines.filter((l) => l.trim());
+    const allCommented =
+        filled.length > 0 && filled.every((l) => /^\s*--\s?/.test(l));
+
+    const next = lines.map((l) => {
+        if (!l.trim()) return l;
+        if (allCommented) return l.replace(/^(\s*)--\s?/, "$1");
+        const indent = l.match(/^\s*/)[0];
+        return `${indent}-- ${l.slice(indent.length)}`;
+    });
+    const out = next.join("\n");
+
+    setValue(ta, v.slice(0, start) + out + v.slice(end));
+
+    // A caret stays a caret (selecting the line would hide it behind the
+    // selection band); an actual selection keeps covering the same lines.
+    if (selStart === selEnd) {
+        const lineIdx = v.slice(start, selStart).split("\n").length - 1;
+        let shift = 0;
+        for (let i = 0; i <= lineIdx; i++) shift += next[i].length - lines[i].length;
+        ta.selectionStart = ta.selectionEnd = Math.max(start, selStart + shift);
+    } else {
+        ta.selectionStart = start;
+        ta.selectionEnd = start + out.length;
+    }
+}
+
+// ⌥↓ — copy the caret's line (or every line the selection touches) below it,
+// leaving the caret in the same spot on the copy.
+function duplicateLines(ta) {
+    const v = ta.value;
+    const selStart = ta.selectionStart;
+    const selEnd = ta.selectionEnd;
+    const start = v.lastIndexOf("\n", selStart - 1) + 1;
+    let end = v.indexOf("\n", selEnd);
+    if (end === -1) end = v.length;
+
+    const block = v.slice(start, end);
+    setValue(ta, v.slice(0, end) + "\n" + block + v.slice(end));
+
+    const offset = block.length + 1;
+    ta.selectionStart = selStart + offset;
+    ta.selectionEnd = selEnd + offset;
+}
+
+// Our own textarea — no React underneath, so a plain assignment is enough
+function setValue(ta, v) {
+    ta.value = v;
+    paintEditor();
+    saveQuerySource(v);
+}
+
+function saveQuerySource(raw) {
+    try {
+        localStorage.setItem(QUERY_SRC_KEY, raw);
+    } catch {}
+}
+
+// ── Syntax colouring ─────────────────────────────────────────────────────────
+const escHtml = (s) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+// "string" · /regex/ · AND OR NOT TO · field: · field= · = · =~ · bare value
+// after an operator · brackets · numbers · * ? ! -
+const QUERY_TOKENS =
+    /("(?:\\.|[^"\\])*")|(\/(?:\\.|[^/\\])*\/)|\b(AND|OR|NOT|TO)\b|([A-Za-z_@][\w.@-]*)(?=\s*(?::|=~|=))|(=~)|(=)|((?<=[:=~]\s{0,8})[^\s()"][^\s()"]*)|([(){}[\]])|(\b\d+(?:\.\d+)?\b)|([*?!]|(?<![\w"])-(?=[\w"]))/g;
+
+function colourCode(src) {
+    const th = T();
+    let out = "";
+    let last = 0;
+    let m;
+    QUERY_TOKENS.lastIndex = 0;
+    while ((m = QUERY_TOKENS.exec(src))) {
+        out += escHtml(src.slice(last, m.index));
+        const [tok, str, re, kw, field, opRe, opEq, value, bracket, num] = m;
+        let style;
+        if (str) style = `color:${th.str}`;
+        else if (re) style = `color:${th.num}`;
+        else if (kw) style = `color:${th.border};font-weight:bold`;
+        else if (field) style = `color:${th.key}`;
+        else if (opRe) style = `color:${th.opRe};font-weight:bold`;
+        else if (opEq) style = `color:${th.opEq};font-weight:bold`;
+        else if (value) style = `color:${th.str}`; // bare value reads like "…"
+        else if (bracket) style = `color:${th.hdr}`;
+        else if (num) style = `color:${th.num}`;
+        else style = `color:${th.bool_f};font-weight:bold`; // * ? ! -
+        out += `<span style="${style}">${escHtml(tok)}</span>`;
+        last = m.index + tok.length;
+    }
+    return out + escHtml(src.slice(last));
+}
+
+function colourQuery(text) {
+    const th = T();
+    return (
+        text
+            .split("\n")
+            .map((line) => {
+                const code = stripLineComment(line);
+                const comment = line.slice(code.length);
+                return (
+                    colourCode(code) +
+                    (comment
+                        ? `<span style="color:${th.comment};font-style:italic;">` +
+                          `${escHtml(comment)}</span>`
+                        : "")
+                );
+            })
+            .join("\n") + "\n" // trailing line keeps the last empty row visible
+    );
+}
+
+function paintEditor() {
+    if (!editorTA || !editorPre) return;
+    editorPre.innerHTML = colourQuery(editorTA.value);
+    editorPre.scrollTop = editorTA.scrollTop;
+    editorPre.scrollLeft = editorTA.scrollLeft;
+}
+
+// ── Running the query ────────────────────────────────────────────────────────
+function runEditorQuery() {
+    if (!editorTA) return;
+    const src = editorTA.value;
+    const clean = compileQuerySugar(stripQueryComments(src));
+    const input = queryBarEl();
+    if (!input) return lfToast("Query bar not found — is this the Discover page?");
+
+    saveQuerySource(src);
+    input.focus();
+    setNativeValue(input, clean);
+    submitQuery(input);
+    setTimeout(() => editorTA?.focus(), 500); // keep typing where you were
+
+    const n = countCommentLines(src);
+    lfToast(
+        n
+            ? `Ran query · ${n} comment line${n > 1 ? "s" : ""} ignored`
+            : clean
+                ? "Ran query"
+                : "Cleared query",
+    );
+}
+
+// ── Suggestions ──────────────────────────────────────────────────────────────
+const SUGGEST_ID = "lf-suggest";
+
+// Values offered inside kubernetes.container_name="…"
+const CONTAINER_NAMES = [
+    "adaptor-account-cdd",
+    "adaptor-account-dcb-vb",
+    "adaptor-application-ccd",
+    "adaptor-application-channel",
+    "adaptor-application-ncb",
+    "adaptor-document-alfresco",
+    "adaptor-document-cmlos",
+    "adaptor-document-email",
+    "adaptor-document-signing",
+    "adaptor-document-statement",
+    "batch-account-stamp-duty-export",
+    "batch-application-geography",
+    "batch-application-notification",
+    "batch-application-occupation",
+    "batch-application-update-expired",
+    "core-account-accept",
+    "core-account-activate-flow",
+    "core-account-calc-stamp-duty",
+    "core-account-deduct-fees",
+    "core-account-setup-revolvingloan",
+    "core-account-update-kyc",
+    "core-application-appform-package",
+    "core-application-ccd-master",
+    "core-application-compliant-check",
+    "core-application-decision",
+    "core-application-dre-consume",
+    "core-application-ncb-consume",
+    "core-application-personal-info",
+    "core-application-request-consent",
+    "core-application-request-form",
+    "core-application-submit-flow",
+    "core-document-alfresco-consume",
+    "core-document-flow",
+    "core-document-follow-up",
+    "core-document-generate-report-go",
+    "core-document-mgmt",
+    "core-document-resend-contract",
+    "core-document-send-email",
+    "core-document-signing",
+    "core-document-statement-consume",
+    "core-foundation-centralize-log",
+    "core-product-master",
+    "dgl-vb",
+    "orch-account-accept",
+    "orch-application-form-mgmt",
+    "orch-application-partner",
+    "orch-document-mgmt",
+    "orch-document-partner",
+    "orch-document-upload",
+    "orch-product-management",
+    "orch-schedule",
+    "proc-gotenberg",
+];
+
+// The known list plus whatever containers actually show up in the loaded logs
+function containerNames() {
+    const set = new Set(CONTAINER_NAMES);
+    cachedPayloads.forEach((p) => {
+        const n = p?.kubernetes?.container_name;
+        if (n) set.add(String(n));
+    });
+    return [...set].sort();
+}
+
+// field → the values worth suggesting after its operator
+const VALUE_SUGGESTIONS = {
+    "kubernetes.container_name": containerNames,
+};
+
+const FIELD_SUGGESTIONS = [
+    "kubernetes",
+    "kubernetes.container_name",
+    "json_payload",
+    "json_payload.loan_app_id",
+    "json_payload.tag",
+    "json_payload.msg",
+    "json_payload.trace_id",
+    "json_payload.span_id",
+    "json_payload.wf_traceparent",
+    "json_payload.level",
+];
+
+let sugItems = [];
+let sugIndex = 0;
+let sugStart = 0; // where the word being completed begins
+let sugQuoted = false; // completing a value inside an opening quote
+let sugTokenRe = /[\w.@-]/; // what still counts as part of that word
+
+const suggestOpen = () => sugItems.length > 0;
+
+// What is being typed right before the caret: a field name, or a value for a
+// field we know the values of.
+function contextAtCaret() {
+    const v = editorTA.value;
+    const pos = editorTA.selectionStart;
+    if (pos !== editorTA.selectionEnd) return null;
+
+    const lineStart = v.lastIndexOf("\n", pos - 1) + 1;
+    const upto = v.slice(lineStart, pos);
+    if (stripLineComment(upto).length < upto.length) return null; // in a comment
+
+    // value:  kubernetes.container_name="core-|
+    const val = upto.match(/([A-Za-z_@][\w.@-]*)\s*(?::|=~|=)\s*(")?([^"\s()]*)$/);
+    if (val && VALUE_SUGGESTIONS[val[1]]) {
+        return {
+            word: val[3],
+            start: pos - val[3].length,
+            quoted: Boolean(val[2]),
+            items: VALUE_SUGGESTIONS[val[1]](),
+            tokenRe: /[^"\s()]/,
+            keepEmpty: true, // an empty value still lists everything
+        };
+    }
+
+    // field:  json_pay|      — but never inside a "quoted string"
+    if ((upto.match(/(^|[^\\])"/g) || []).length % 2) return null;
+    const m = upto.match(/[A-Za-z_@][\w.@-]*$/);
+    if (!m) return null;
+    return {
+        word: m[0],
+        start: lineStart + m.index,
+        quoted: false,
+        items: FIELD_SUGGESTIONS,
+        tokenRe: /[\w.@-]/,
+    };
+}
+
+// Caret position on screen, measured with a hidden copy of the text
+function caretPoint() {
+    if (!editorMirror) return null;
+    editorMirror.textContent = editorTA.value.slice(0, editorTA.selectionStart);
+    const marker = document.createElement("span");
+    marker.textContent = "​";
+    editorMirror.appendChild(marker);
+    editorMirror.scrollTop = editorTA.scrollTop;
+    return marker.getBoundingClientRect();
+}
+
+function hideSuggest() {
+    sugItems = [];
+    document.getElementById(SUGGEST_ID)?.remove();
+}
+
+function updateSuggest() {
+    if (!editorTA) return;
+    const at = contextAtCaret();
+    if (!at || (!at.word && !at.keepEmpty)) return hideSuggest();
+
+    const q = at.word.toLowerCase();
+    const starts = at.items.filter((f) => f.toLowerCase().startsWith(q));
+    const rest = at.items.filter(
+        (f) => !f.toLowerCase().startsWith(q) && f.toLowerCase().includes(q),
+    );
+    const matches = [...starts, ...rest];
+    // A single exact match is already typed out — nothing left to suggest
+    if (!matches.length || (matches.length === 1 && matches[0].toLowerCase() === q))
+        return hideSuggest();
+
+    sugItems = matches;
+    sugIndex = 0;
+    sugStart = at.start;
+    sugQuoted = at.quoted;
+    sugTokenRe = at.tokenRe;
+    renderSuggest();
+}
+
+function renderSuggest() {
+    const th = T();
+    const point = caretPoint();
+    if (!point) return hideSuggest();
+
+    let box = document.getElementById(SUGGEST_ID);
+    if (!box) {
+        box = document.createElement("div");
+        box.id = SUGGEST_ID;
+        document.body.appendChild(box);
+    }
+    box.textContent = "";
+    box.style.cssText =
+        "position:fixed;z-index:2147483647;max-height:190px;overflow-y:auto;" +
+        `background:${th.bg};color:${th.fg};border:1px solid ${th.border};` +
+        "border-radius:6px;box-shadow:0 6px 20px rgba(0,0,0,0.3);padding:3px;" +
+        "font-family:'Fira Code',Consolas,monospace;font-size:12px;min-width:210px;";
+
+    sugItems.forEach((field, i) => {
+        const row = el(
+            "div",
+            "padding:4px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;" +
+                (i === sugIndex
+                    ? `background-color:${th.selBg};color:${th.key};`
+                    : `color:${th.fg};`),
+            field,
+        );
+        row.addEventListener("mouseenter", () => {
+            sugIndex = i;
+            renderSuggest();
+        });
+        // mousedown, not click — the textarea must not lose focus first
+        row.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            acceptSuggest();
+        });
+        box.appendChild(row);
+        if (i === sugIndex)
+            setTimeout(() => row.scrollIntoView?.({ block: "nearest" }), 0);
+    });
+
+    const w = box.offsetWidth;
+    const left = Math.min(point.left, window.innerWidth - w - 8);
+    const below = point.bottom + 2;
+    const fitsBelow = below + box.offsetHeight < window.innerHeight - 8;
+    box.style.left = Math.max(8, left) + "px";
+    box.style.top = (fitsBelow ? below : point.top - box.offsetHeight - 2) + "px";
+}
+
+function moveSuggest(delta) {
+    sugIndex = (sugIndex + delta + sugItems.length) % sugItems.length;
+    renderSuggest();
+}
+
+function acceptSuggest() {
+    let text = sugItems[sugIndex];
+    const v = editorTA.value;
+    hideSuggest();
+
+    // Replace the whole word/value the caret sits in, not just the part before
+    // it, so completing from the middle of one doesn't leave its tail behind.
+    let end = editorTA.selectionStart;
+    while (end < v.length && sugTokenRe.test(v[end])) end++;
+
+    // Close the quote we were typing inside, unless one is already there
+    if (sugQuoted && v[end] !== '"') text += '"';
+    setValue(editorTA, v.slice(0, sugStart) + text + v.slice(end));
+    const caret = sugStart + text.length;
+    editorTA.selectionStart = editorTA.selectionEnd = caret;
+    editorTA.focus();
+    // No re-open here: typing "." brings the subfields up, and Enter stays a
+    // newline right after you accepted something.
+}
+
+// ⌘↵ / Ctrl+↵ runs the editor's query from anywhere on the page — except from
+// inside the editor (it handles its own) or OpenSearch's query bar (that one
+// submits itself).
+document.addEventListener(
+    "keydown",
+    (e) => {
+        if (e.key !== "Enter" || !(e.metaKey || e.ctrlKey)) return;
+        if (!editorBox?.isConnected) return;
+        if (editorBox.contains(e.target) || e.target === queryBarEl()) return;
+        e.preventDefault();
+        runEditorQuery();
+    },
+    true,
+);
+
+// ── Editor DOM ───────────────────────────────────────────────────────────────
+function installEditorStyle() {
+    const th = T();
+    document.getElementById(EDITOR_STYLE_ID)?.remove();
+    const s = document.createElement("style");
+    s.id = EDITOR_STYLE_ID;
+    // The textarea's own glyphs are hidden so the coloured layer shows through;
+    // the caret and the selection band stay visible.
+    s.textContent = `
+    #${EDITOR_ID} textarea {
+      color: transparent;
+      -webkit-text-fill-color: transparent;
+      caret-color: ${th.fg};
+    }
+    #${EDITOR_ID} textarea::selection { background: ${th.selBg}; }
+    #${EDITOR_ID} textarea::-moz-selection { background: ${th.selBg}; }
+    #${EDITOR_ID} textarea::placeholder {
+      color: ${th.empty};
+      -webkit-text-fill-color: ${th.empty};
+    }
+  `;
+    document.head.appendChild(s);
+}
+
+function setEditorHeight(px) {
+    editorHeight = Math.min(600, Math.max(60, Math.round(px)));
+    try {
+        localStorage.setItem(EDITOR_H_KEY, String(editorHeight));
+    } catch {}
+    const wrap = document.getElementById(EDITOR_ID)?.querySelector(".lf-ed-wrap");
+    if (wrap) wrap.style.height = editorHeight + "px";
+}
+
+function editorButton(text, title, primary = false) {
+    const th = T();
+    const b = el(
+        "button",
+        "font-family:inherit;font-size:11px;padding:4px 9px;border-radius:5px;" +
+            "cursor:pointer;white-space:nowrap;" +
+            (primary
+                ? `background:${th.border};color:${th.bg};border:1px solid ${th.border};`
+                : `background:${th.jsonBg};color:${th.fg};border:1px solid ${th.jsonBord};`),
+        text,
+    );
+    b.title = title;
+    b.type = "button";
+    return b;
+}
+
+function buildEditor() {
+    const th = T();
+    installEditorStyle();
+
+    const box = el(
+        "div",
+        `margin:6px 0;border:1px solid ${th.border};border-radius:8px;` +
+            `background:${th.jsonBg};color:${th.fg};overflow:hidden;` +
+            "font-family:'Fira Code',Consolas,monospace;font-size:13px;",
+    );
+    box.id = EDITOR_ID;
+
+    // ── Toolbar ──────────────────────────────────────────────────────────────
+    const bar = el(
+        "div",
+        "display:flex;align-items:center;gap:6px;padding:5px 8px;" +
+            `background:${th.bg};border-bottom:1px solid ${th.sep};`,
+    );
+    bar.appendChild(
+        el("span", `color:${th.hdr};font-size:10px;letter-spacing:0.4px;flex:1;`, "QUERY EDITOR"),
+    );
+
+    const runBtn = editorButton("▶ Run", "Run the query (⌘↵ / Ctrl+↵)", true);
+    runBtn.addEventListener("click", runEditorQuery);
+
+    const cmtBtn = editorButton("// Comment", "Comment or uncomment the selected lines (⌘/)");
+    cmtBtn.addEventListener("click", () => {
+        editorTA.focus();
+        toggleLineComment(editorTA);
+    });
+
+    const pullBtn = editorButton("⇩ Pull", "Copy the query that is currently applied into the editor");
+    pullBtn.addEventListener("click", () => {
+        const input = queryBarEl();
+        if (!input) return;
+        setValue(editorTA, input.value || "");
+        editorTA.focus();
+    });
+
+    const clrBtn = editorButton("✕", "Clear the editor");
+    clrBtn.addEventListener("click", () => {
+        setValue(editorTA, "");
+        editorTA.focus();
+    });
+
+    [runBtn, cmtBtn, pullBtn, clrBtn].forEach((b) => bar.appendChild(b));
+    box.appendChild(bar);
+
+    // ── Code area: colour layer + transparent textarea on top ────────────────
+    const wrap = el("div", `position:relative;height:${editorHeight}px;`);
+    wrap.className = "lf-ed-wrap";
+
+    const metrics =
+        "margin:0;padding:8px 11px;border:0;box-sizing:border-box;" +
+        "width:100%;height:100%;font:inherit;line-height:1.6;" +
+        "white-space:pre-wrap;overflow-wrap:break-word;word-break:break-word;" +
+        "tab-size:2;overflow:auto;";
+
+    editorMirror = el(
+        "div",
+        `position:absolute;inset:0;z-index:0;visibility:hidden;pointer-events:none;${metrics}`,
+    );
+    editorPre = el("pre", `position:absolute;inset:0;z-index:1;pointer-events:none;background:transparent;${metrics}`);
+    editorTA = document.createElement("textarea");
+    editorTA.spellcheck = false;
+    editorTA.placeholder =
+        'json_payload.level:"ERROR"\n-- notes go after --, // or #';
+    editorTA.style.cssText =
+        `position:absolute;inset:0;z-index:2;resize:none;background:transparent;` +
+        `outline:none;${metrics}`;
+
+    editorTA.addEventListener("input", () => {
+        paintEditor();
+        saveQuerySource(editorTA.value);
+        updateSuggest();
+    });
+    editorTA.addEventListener("scroll", () => {
+        editorPre.scrollTop = editorTA.scrollTop;
+        editorPre.scrollLeft = editorTA.scrollLeft;
+        hideSuggest();
+    });
+    editorTA.addEventListener("click", updateSuggest);
+    editorTA.addEventListener("blur", () => setTimeout(hideSuggest, 120));
+    // Moving the caret out of a word closes the list (the popup owns ↑↓ itself)
+    editorTA.addEventListener("keyup", (e) => {
+        if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key))
+            updateSuggest();
+    });
+
+    // Arrow keys, Home/End, Enter — all native here. Only these are ours.
+    editorTA.addEventListener("keydown", (e) => {
+        e.stopPropagation(); // never let the page's shortcuts see them
+
+        // While the suggestion list is up it takes ↑ ↓ Tab Enter Esc
+        if (suggestOpen() && !e.metaKey && !e.ctrlKey && !e.altKey) {
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                return moveSuggest(e.key === "ArrowDown" ? 1 : -1);
+            }
+            if (e.key === "Enter" || e.key === "Tab") {
+                e.preventDefault();
+                return acceptSuggest();
+            }
+            if (e.key === "Escape") {
+                e.preventDefault();
+                return hideSuggest();
+            }
+        }
+
+        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            runEditorQuery();
+        } else if (e.key === "/" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            toggleLineComment(editorTA);
+        } else if (e.key === "ArrowDown" && e.altKey) {
+            e.preventDefault();
+            duplicateLines(editorTA);
+        } else if (e.key === "Tab") {
+            e.preventDefault();
+            const { selectionStart: s, selectionEnd: t, value } = editorTA;
+            setValue(editorTA, value.slice(0, s) + "  " + value.slice(t));
+            editorTA.selectionStart = editorTA.selectionEnd = s + 2;
+        }
+    });
+
+    wrap.appendChild(editorMirror);
+    wrap.appendChild(editorPre);
+    wrap.appendChild(editorTA);
+    box.appendChild(wrap);
+
+    // ── Resize grip + hint ───────────────────────────────────────────────────
+    const foot = el(
+        "div",
+        "display:flex;align-items:center;gap:8px;padding:3px 8px 4px;" +
+            `background:${th.bg};border-top:1px solid ${th.sep};cursor:row-resize;` +
+            `color:${th.hdr};font-size:10px;`,
+    );
+    foot.appendChild(
+        el(
+            "span",
+            "flex:1;",
+            '⌘↵ run · ⌘/ comment · ⌥↓ copy line · f="v" → f:"v" · f=~"v" → f:/.*v.*/ · comments: -- // #',
+        ),
+    );
+    foot.appendChild(el("span", "letter-spacing:2px;", "⋯"));
+    foot.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        const startY = e.clientY;
+        const startH = editorHeight;
+        const onMove = (ev) => setEditorHeight(startH + ev.clientY - startY);
+        const onUp = () => {
+            document.removeEventListener("mousemove", onMove);
+            document.removeEventListener("mouseup", onUp);
+        };
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+    });
+    box.appendChild(foot);
+
+    // Restore the last annotated query, or seed from what's applied right now
+    let src = "";
+    try {
+        src = localStorage.getItem(QUERY_SRC_KEY) || "";
+    } catch {}
+    editorTA.value = src || queryBarEl()?.value || "";
+    paintEditor();
+
+    return box;
+}
+
+// The row that holds OpenSearch's query bar — we sit right underneath it
+function queryBarRow() {
+    const input = queryBarEl();
+    if (!input) return null;
+    return (
+        input.closest("form") ||
+        input.closest(".osdQueryBar") ||
+        input.closest(".kbnQueryBar") ||
+        input.parentElement?.parentElement?.parentElement ||
+        null
+    );
+}
+
+// OpenSearch re-renders around the query bar on navigation, so the editor is
+// re-seated (moved, not rebuilt — it keeps its text and listeners) every tick.
+function mountEditor() {
+    const row = queryBarRow();
+    if (!row || !row.parentElement) return;
+    if (!editorBox) editorBox = buildEditor();
+    if (editorBox.previousElementSibling === row) return;
+    row.parentElement.insertBefore(editorBox, row.nextSibling);
+}
+
+// Rebuilt on a theme change so every colour follows
+function rebuildEditor() {
+    if (!editorBox) return;
+    const text = editorTA.value;
+    editorBox.remove();
+    editorBox = buildEditor();
+    editorTA.value = text;
+    paintEditor();
+    mountEditor();
+}
+
+// ── Histogram toggle ──────────────────────────────────────────────────────────
+// The count-per-hour chart eats most of the screen; this collapses it and
+// remembers the choice.
+const CHART_BTN_ID = "lf-chart-toggle";
+const CHART_HIDDEN_KEY = "lf_chart_hidden";
+
+let chartHidden = false;
+try {
+    chartHidden = localStorage.getItem(CHART_HIDDEN_KEY) === "1";
+} catch {}
+
+const CHART_SELECTORS = [
+    '[data-test-subj="discoverChart"]',
+    ".dscTimechart",
+    ".dscChart",
+    ".dscCanvas__chart",
+    ".dscHistogram",
+];
+
+function findChart() {
+    const direct = findElement(CHART_SELECTORS);
+    if (direct) return direct;
+    // Unknown OpenSearch build: climb from the rendered chart to its container
+    const inner = document.querySelector(".echChart, .visChart, .visWrapper");
+    return inner ? inner.closest("[class*='hart']") || inner.parentElement : null;
+}
+
+// The "Aug 1 … - Aug 3 … per [Auto]" strip that sits above the chart — it
+// belongs to the chart, so it collapses with it.
+function chartHeader(chart) {
+    let row = chart?.previousElementSibling;
+    if (row?.id === CHART_BTN_ID) row = row.previousElementSibling; // our button
+    if (!row || row.querySelector("table,tbody")) return null;
+    const looksLikeHeader =
+        row.querySelector("select") || /\sper\s/.test(row.textContent || "");
+    return looksLikeHeader ? row : null;
+}
+
+function applyChartHidden(chart) {
+    chart = chart || findChart();
+    if (chart) {
+        chart.style.display = chartHidden ? "none" : "";
+        const header = chartHeader(chart);
+        if (header) header.style.display = chartHidden ? "none" : "";
+    }
+    const btn = document.getElementById(CHART_BTN_ID);
+    if (btn) btn.textContent = chartHidden ? "▸ Show chart" : "▾ Hide chart";
+}
+
+// ── Filter bar ────────────────────────────────────────────────────────────────
+// The "▽ ⊕ Add filter" strip — everything this extension does goes through the
+// query string, so it is hidden by default (panel checkbox brings it back).
+const CHROME_STYLE_ID = "lf-chrome-style";
+const FILTER_BAR_KEY = "lf_filterbar_hidden";
+
+let filterBarHidden = true;
+try {
+    filterBarHidden = localStorage.getItem(FILTER_BAR_KEY) !== "0";
+} catch {}
+
+function applyFilterBarHidden() {
+    document.getElementById(CHROME_STYLE_ID)?.remove();
+    if (!filterBarHidden) return;
+    const style = document.createElement("style");
+    style.id = CHROME_STYLE_ID;
+    style.textContent = `
+    .globalFilterGroup__wrapper,
+    [data-test-subj="globalFilterBar"],
+    .globalFilterBar { display: none !important; }
+  `;
+    document.head.appendChild(style);
+}
+
+function setFilterBarHidden(on) {
+    filterBarHidden = on;
+    try {
+        localStorage.setItem(FILTER_BAR_KEY, on ? "1" : "0");
+    } catch {}
+    applyFilterBarHidden();
+}
+
+// ── Left sidebar ──────────────────────────────────────────────────────────────
+// Collapsed on load and on every query/navigation change, so the log table gets
+// the whole width.
+const SIDEBAR_TOGGLE =
+    '[data-test-subj="dscSideBarCollapse"],[data-test-subj="discoverSidebarCollapse"],' +
+    '.euiResizableToggleButton,button[aria-label*="ollapse"],button[title*="ollapse"]';
+const SIDEBAR_KEY = "lf_collapse_sidebar";
+
+let collapseSidebarOn = true;
+try {
+    collapseSidebarOn = localStorage.getItem(SIDEBAR_KEY) !== "0";
+} catch {}
+let lastCollapse = 0;
+
+function collapseSidebar() {
+    for (const b of document.querySelectorAll(SIDEBAR_TOGGLE)) {
+        // Only the control on the left edge — never some unrelated "collapse"
+        if (b.getBoundingClientRect().left > 300) continue;
+        if (b.getAttribute("aria-expanded") === "false") continue;
+        const label = `${b.getAttribute("aria-label") || ""} ${b.title || ""}`.toLowerCase();
+        if (label.includes("expand") || label.includes("show")) continue; // would open it
+        b.click();
+        lastCollapse = Date.now();
+        return true;
+    }
+    return false;
+}
+
+// Retries while Discover is still rendering its sidebar
+async function autoCollapseSidebar() {
+    if (!collapseSidebarOn) return;
+    if (Date.now() - lastCollapse < 10000) return; // don't fight a manual re-open
+    await waitFor(collapseSidebar, 8000, 400);
+}
+
+function setCollapseSidebar(on) {
+    collapseSidebarOn = on;
+    try {
+        localStorage.setItem(SIDEBAR_KEY, on ? "1" : "0");
+    } catch {}
+    if (on) {
+        lastCollapse = 0;
+        autoCollapseSidebar();
+    }
+}
+
+function mountChartToggle() {
+    const chart = findChart();
+    if (!chart || !chart.parentElement) return;
+
+    let btn = document.getElementById(CHART_BTN_ID);
+    if (!btn) {
+        const th = T();
+        btn = el(
+            "button",
+            "margin:4px 0;padding:3px 9px;border-radius:5px;cursor:pointer;" +
+                `background:${th.jsonBg};color:${th.fg};border:1px solid ${th.jsonBord};` +
+                "font-family:'Fira Code',Consolas,monospace;font-size:11px;",
+        );
+        btn.id = CHART_BTN_ID;
+        btn.type = "button";
+        btn.title = "Collapse the count-per-hour histogram";
+        btn.addEventListener("click", () => {
+            chartHidden = !chartHidden;
+            try {
+                localStorage.setItem(CHART_HIDDEN_KEY, chartHidden ? "1" : "0");
+            } catch {}
+            applyChartHidden();
+        });
+    }
+    if (btn.nextElementSibling !== chart)
+        chart.parentElement.insertBefore(btn, chart);
+    applyChartHidden(chart);
+}
+
+function watchQueryBar() {
+    const tick = () => {
+        mountEditor();
+        mountChartToggle();
+        // Re-inject only if the page dropped our stylesheet
+        if (filterBarHidden && !document.getElementById(CHROME_STYLE_ID))
+            applyFilterBarHidden();
+    };
+    tick();
+    setInterval(tick, 1000);
+    autoCollapseSidebar();
+}
+
+// Every query / time-range / navigation change re-collapses the sidebar
+window.addEventListener("message", (e) => {
+    if (e.source === window && e.data?.type === "__LF_NAV__") autoCollapseSidebar();
+});
+
+// ── In-page extractor panel ───────────────────────────────────────────────────
+const PANEL_ID = "lf-panel";
+const LAUNCH_ID = "lf-launcher";
+const PANEL_OPEN_KEY = "lf_panel_open";
+
+const PANEL_PRESETS = {
+    dev: [
+        "coalesce(time, timestamp)",
+        "level",
+        "coalesce(msg, message)",
+        "loan_app_id",
+        "trace_id",
+        "span_id",
+        "request_header.Wf-traceparent",
+    ],
+};
+
+let panelFields = [];
+let panelSearch = "";
+let panelColsHidden = false;
+let chipsBox = null;
+let listBox = null;
+let panelDragIndex = null;
+
+function el(tag, css, text) {
+    const e = document.createElement(tag);
+    if (css) e.style.cssText = css;
+    if (text != null) e.textContent = text;
+    return e;
+}
+
+// Every field path present in the loaded logs — from the intercepted search
+// response when we have it, otherwise from the json_payload cells on screen.
+function discoverFields() {
+    const paths = new Set();
+    const walk = (obj, prefix, depth) => {
+        if (!obj || typeof obj !== "object" || depth > 3) return;
+        for (const [k, v] of Object.entries(obj)) {
+            const p = prefix ? `${prefix}.${k}` : k;
+            paths.add(p);
+            if (v && typeof v === "object" && !Array.isArray(v))
+                walk(v, p, depth + 1);
+        }
+    };
+
+    cachedPayloads.slice(0, 40).forEach((p) => {
+        if (p && typeof p === "object") walk(p, "", 1);
+    });
+
+    if (!paths.size) {
+        let seen = 0;
+        for (const cell of collectCandidateCells()) {
+            if (seen >= 10) break;
+            const raw = (cell.textContent || "").trim();
+            const start = raw.indexOf("{");
+            if (start < 0) continue;
+            const parsed = tryParseJson(raw.slice(start));
+            if (!parsed) continue;
+            walk(parsed, "", 1);
+            seen++;
+        }
+    }
+    return [...paths].sort();
+}
+
+// A spec's display label — coalesce(a, b) is "checked" by its first field
+function specLabel(spec) {
+    const p = parseSpec(spec);
+    return p.type === "coalesce" ? p.fields[0] : p.field;
+}
+
+function persistFields() {
+    try {
+        chrome.storage?.local?.set({ extractFields: panelFields });
+    } catch {}
+}
+
+// Field set changed → save, re-render the panel, and refresh the table when
+// extraction is already running.
+function setPanelFields(fields, { rerender = true } = {}) {
+    panelFields = fields;
+    persistFields();
+    if (rerender) {
+        renderChips();
+        renderList();
+    }
+    if (activeFields.length) {
+        activeFields = fields.slice();
+        purgeOverlays();
+        processTableRows(activeFields);
+    }
+}
+
+function toggleField(path, on) {
+    if (on) {
+        if (!panelFields.some((s) => specLabel(s) === path))
+            setPanelFields([...panelFields, path]);
+    } else {
+        setPanelFields(panelFields.filter((s) => specLabel(s) !== path));
+    }
+}
+
+function renderChips() {
+    if (!chipsBox) return;
+    const th = T();
+    chipsBox.textContent = "";
+    if (!panelFields.length) {
+        chipsBox.appendChild(
+            el("span", `color:${th.empty};font-style:italic;`, "No columns yet — tick a field below"),
+        );
+        return;
+    }
+
+    panelFields.forEach((spec, i) => {
+        const chip = el(
+            "span",
+            `display:inline-flex;align-items:center;gap:5px;margin:0 4px 4px 0;` +
+                `padding:3px 6px;border-radius:5px;cursor:grab;` +
+                `background:${th.jsonBg};border:1px solid ${th.jsonBord};color:${th.fg};`,
+        );
+        chip.draggable = true;
+        chip.title = `${spec} · drag to reorder`;
+        chip.appendChild(el("span", "pointer-events:none;", spec));
+
+        const rm = el("span", `cursor:pointer;color:${th.hdr};font-weight:bold;`, "×");
+        rm.addEventListener("click", () =>
+            setPanelFields(panelFields.filter((_, j) => j !== i)),
+        );
+        chip.appendChild(rm);
+
+        chip.addEventListener("dragstart", (e) => {
+            panelDragIndex = i;
+            e.dataTransfer.effectAllowed = "move";
+            chip.style.opacity = "0.4";
+        });
+        chip.addEventListener("dragend", () => {
+            panelDragIndex = null;
+            chip.style.opacity = "";
+        });
+        chip.addEventListener("dragover", (e) => {
+            if (panelDragIndex === null) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+        });
+        chip.addEventListener("drop", (e) => {
+            if (panelDragIndex === null) return;
+            e.preventDefault();
+            const rect = chip.getBoundingClientRect();
+            let to = e.clientX > rect.left + rect.width / 2 ? i + 1 : i;
+            const from = panelDragIndex;
+            if (from < to) to -= 1;
+            if (from === to) return;
+            const f = panelFields.slice();
+            const [moved] = f.splice(from, 1);
+            f.splice(to, 0, moved);
+            setPanelFields(f);
+        });
+
+        chipsBox.appendChild(chip);
+    });
+}
+
+function renderList() {
+    if (!listBox) return;
+    const th = T();
+    const q = panelSearch.trim().toLowerCase();
+    const fields = discoverFields().filter((f) => !q || f.toLowerCase().includes(q));
+
+    listBox.textContent = "";
+    if (!fields.length) {
+        listBox.appendChild(
+            el(
+                "div",
+                `color:${th.empty};font-style:italic;padding:6px;`,
+                cachedPayloads.length || document.querySelector("tbody tr")
+                    ? "No field matches"
+                    : "Waiting for log data…",
+            ),
+        );
+        return;
+    }
+
+    fields.forEach((path) => {
+        const row = el(
+            "label",
+            "display:flex;align-items:center;gap:7px;padding:3px 6px;" +
+                `border-radius:4px;cursor:pointer;color:${th.fg};`,
+        );
+        row.addEventListener("mouseenter", () => (row.style.background = th.jsonBg));
+        row.addEventListener("mouseleave", () => (row.style.background = "transparent"));
+
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = panelFields.some((s) => specLabel(s) === path);
+        cb.addEventListener("change", () => toggleField(path, cb.checked));
+
+        row.appendChild(cb);
+        row.appendChild(
+            el("span", "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;", path),
+        );
+        row.title = path;
+        listBox.appendChild(row);
+    });
+}
+
+function panelButton(text, primary = false) {
+    const th = T();
+    const b = el(
+        "button",
+        "font-family:inherit;font-size:11px;padding:6px 9px;border-radius:5px;" +
+            "cursor:pointer;flex:1;white-space:nowrap;" +
+            (primary
+                ? `background:${th.border};color:${th.bg};border:1px solid ${th.border};`
+                : `background:${th.jsonBg};color:${th.fg};border:1px solid ${th.jsonBord};`),
+        text,
+    );
+    return b;
+}
+
+function openPanel() {
+    if (document.getElementById(PANEL_ID)) return;
+    const th = T();
+
+    const panel = el(
+        "div",
+        "position:fixed;right:20px;bottom:64px;width:340px;max-height:72vh;" +
+            "z-index:2147483646;display:flex;flex-direction:column;" +
+            `background:${th.bg};color:${th.fg};border:1px solid ${th.border};` +
+            "border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,0.35);" +
+            "font-family:'Fira Code',Consolas,monospace;font-size:12px;overflow:hidden;",
+    );
+    panel.id = PANEL_ID;
+
+    // ── Header (drag to move) ────────────────────────────────────────────────
+    const head = el(
+        "div",
+        "display:flex;align-items:center;gap:8px;padding:9px 11px;cursor:move;" +
+            `background:${th.jsonBg};border-bottom:1px solid ${th.sep};`,
+    );
+    head.appendChild(el("span", "flex:1;font-weight:bold;", "⌗ JSON Field Extractor"));
+
+    const themeSel = document.createElement("select");
+    themeSel.style.cssText =
+        `font-family:inherit;font-size:11px;background:${th.bg};color:${th.fg};` +
+        `border:1px solid ${th.jsonBord};border-radius:4px;padding:2px;`;
+    [["light", "☀"], ["dark", "🌙"]].forEach(([v, t]) => {
+        const o = document.createElement("option");
+        o.value = v;
+        o.textContent = t;
+        themeSel.appendChild(o);
+    });
+    themeSel.value = activeTheme;
+    themeSel.addEventListener("change", () => {
+        try {
+            chrome.storage?.local?.set({ theme: themeSel.value });
+        } catch {}
+        setTheme(themeSel.value);
+    });
+    head.appendChild(themeSel);
+
+    const close = el("span", `cursor:pointer;color:${th.hdr};font-size:14px;`, "×");
+    close.title = "Close";
+    close.addEventListener("click", () => {
+        closePanel();
+        try {
+            localStorage.setItem(PANEL_OPEN_KEY, "0");
+        } catch {}
+    });
+    head.appendChild(close);
+
+    head.addEventListener("mousedown", (e) => {
+        if (e.target === close || e.target === themeSel) return;
+        e.preventDefault();
+        const rect = panel.getBoundingClientRect();
+        const dx = e.clientX - rect.left;
+        const dy = e.clientY - rect.top;
+        const onMove = (ev) => {
+            panel.style.left = ev.clientX - dx + "px";
+            panel.style.top = ev.clientY - dy + "px";
+            panel.style.right = "auto";
+            panel.style.bottom = "auto";
+        };
+        const onUp = () => {
+            document.removeEventListener("mousemove", onMove);
+            document.removeEventListener("mouseup", onUp);
+        };
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+    });
+    panel.appendChild(head);
+
+    // ── Body ─────────────────────────────────────────────────────────────────
+    const body = el(
+        "div",
+        "padding:10px 11px;overflow-y:auto;min-height:0;" +
+            "display:flex;flex-direction:column;gap:8px;",
+    );
+
+    body.appendChild(el("div", `color:${th.hdr};font-size:10px;letter-spacing:0.4px;`, "COLUMNS (drag to reorder)"));
+    chipsBox = el("div", "display:flex;flex-wrap:wrap;");
+    body.appendChild(chipsBox);
+
+    // Preset + custom spec
+    const specRow = el("div", "display:flex;gap:6px;");
+    const preset = document.createElement("select");
+    preset.style.cssText =
+        `flex:1;font-family:inherit;font-size:11px;background:${th.bg};color:${th.fg};` +
+        `border:1px solid ${th.jsonBord};border-radius:5px;padding:5px;`;
+    [["", "— preset —"], ["dev", "dev preset"]].forEach(([v, t]) => {
+        const o = document.createElement("option");
+        o.value = v;
+        o.textContent = t;
+        preset.appendChild(o);
+    });
+    preset.addEventListener("change", () => {
+        const f = PANEL_PRESETS[preset.value];
+        preset.value = "";
+        if (f) setPanelFields(f.slice());
+    });
+    specRow.appendChild(preset);
+    body.appendChild(specRow);
+
+    const customInput = document.createElement("input");
+    customInput.placeholder = "custom spec — e.g. coalesce(msg, message) ↵";
+    customInput.style.cssText =
+        `width:100%;box-sizing:border-box;font-family:inherit;font-size:11px;padding:5px 7px;` +
+        `background:${th.bg};color:${th.fg};border:1px solid ${th.jsonBord};border-radius:5px;`;
+    customInput.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        e.stopPropagation();
+        const v = customInput.value.trim();
+        if (!v || panelFields.includes(v)) return;
+        customInput.value = "";
+        setPanelFields([...panelFields, v]);
+    });
+    body.appendChild(customInput);
+
+    // Field selector
+    const listHead = el("div", "display:flex;align-items:center;gap:6px;");
+    listHead.appendChild(
+        el("span", `color:${th.hdr};font-size:10px;letter-spacing:0.4px;flex:1;`, "FIELDS IN THESE LOGS"),
+    );
+    const refresh = el("span", `cursor:pointer;color:${th.toggle};`, "⟳");
+    refresh.title = "Rescan loaded logs";
+    refresh.addEventListener("click", renderList);
+    listHead.appendChild(refresh);
+    body.appendChild(listHead);
+
+    const search = document.createElement("input");
+    search.placeholder = "filter fields…";
+    search.value = panelSearch;
+    search.style.cssText = customInput.style.cssText;
+    search.addEventListener("input", () => {
+        panelSearch = search.value;
+        renderList();
+    });
+    search.addEventListener("keydown", (e) => e.stopPropagation());
+    body.appendChild(search);
+
+    listBox = el(
+        "div",
+        `max-height:220px;overflow-y:auto;border:1px solid ${th.sep};border-radius:5px;padding:3px;`,
+    );
+    body.appendChild(listBox);
+
+    // Actions
+    const row1 = el("div", "display:flex;gap:6px;");
+    const applyBtn = panelButton("Apply to Table", true);
+    applyBtn.addEventListener("click", async () => {
+        if (!panelFields.length) return lfToast("Pick at least one field");
+        const res = await applyExtract({ fields: panelFields });
+        panelColsHidden = true;
+        hideBtn.textContent = "👁 Show Cols";
+        lfToast(
+            res?.ok
+                ? `Extracting ${panelFields.length} field${panelFields.length > 1 ? "s" : ""} · ${res.found ?? 0} rows`
+                : res?.error || "Failed",
+        );
+    });
+    const stopBtn = panelButton("Stop");
+    stopBtn.addEventListener("click", () => {
+        stopExtract();
+        showColumn();
+        panelColsHidden = false;
+        hideBtn.textContent = "🙈 Hide Cols";
+        try {
+            chrome.storage?.local?.set({ extractAuto: false });
+        } catch {}
+        autoChk.checked = false;
+        lfToast("Extraction stopped");
+    });
+    row1.appendChild(applyBtn);
+    row1.appendChild(stopBtn);
+    body.appendChild(row1);
+
+    const row2 = el("div", "display:flex;gap:6px;align-items:center;");
+    const hideBtn = panelButton("🙈 Hide Cols");
+    hideBtn.addEventListener("click", () => {
+        panelColsHidden = !panelColsHidden;
+        if (panelColsHidden) hideColumns({});
+        else showColumn();
+        hideBtn.textContent = panelColsHidden ? "👁 Show Cols" : "🙈 Hide Cols";
+    });
+    row2.appendChild(hideBtn);
+
+    const autoLbl = el("label", "display:flex;align-items:center;gap:5px;flex:1;cursor:pointer;");
+    const autoChk = document.createElement("input");
+    autoChk.type = "checkbox";
+    autoChk.addEventListener("change", () => {
+        try {
+            chrome.storage?.local?.set({ extractAuto: autoChk.checked });
+        } catch {}
+        if (autoChk.checked && panelFields.length) applyBtn.click();
+    });
+    autoLbl.appendChild(autoChk);
+    autoLbl.appendChild(el("span", "", "auto-apply"));
+    row2.appendChild(autoLbl);
+    body.appendChild(row2);
+
+    // ── Query editor height ──────────────────────────────────────────────────
+    const qRow = el(
+        "div",
+        `display:flex;gap:6px;align-items:center;border-top:1px solid ${th.sep};padding-top:8px;`,
+    );
+    qRow.appendChild(
+        el("span", `color:${th.hdr};font-size:10px;letter-spacing:0.4px;flex:1;`, "QUERY EDITOR"),
+    );
+    const shorter = panelButton("▼ Shorter");
+    const taller = panelButton("▲ Taller");
+    shorter.addEventListener("click", () => setEditorHeight(editorHeight - 30));
+    taller.addEventListener("click", () => setEditorHeight(editorHeight + 30));
+    qRow.appendChild(shorter);
+    qRow.appendChild(taller);
+    body.appendChild(qRow);
+
+    // ── Page chrome ──────────────────────────────────────────────────────────
+    body.appendChild(
+        el("div", `color:${th.hdr};font-size:10px;letter-spacing:0.4px;`, "PAGE"),
+    );
+    const check = (label, on, onChange) => {
+        const row = el("label", "display:flex;align-items:center;gap:6px;cursor:pointer;");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = on;
+        cb.addEventListener("change", () => onChange(cb.checked));
+        row.appendChild(cb);
+        row.appendChild(el("span", "", label));
+        body.appendChild(row);
+    };
+    check("Hide the “Add filter” bar", filterBarHidden, setFilterBarHidden);
+    check("Collapse the left sidebar", collapseSidebarOn, setCollapseSidebar);
+
+    body.appendChild(
+        el(
+            "div",
+            `color:${th.hdr};font-size:10px;line-height:1.6;`,
+            "Write the query in the editor under the search bar · ⌘↵ runs it · ⌘/ comments the selected lines · -- // # comments are stripped before it runs",
+        ),
+    );
+
+    panel.appendChild(body);
+    document.body.appendChild(panel);
+
+    // Fill from whatever the popup last saved, then paint
+    readStored(["extractFields", "extractAuto"]).then((d) => {
+        panelFields = activeFields.length
+            ? activeFields.slice()
+            : d.extractFields || [];
+        autoChk.checked = Boolean(d.extractAuto);
+        panelColsHidden = Boolean(document.getElementById(HIDE_STYLE_ID));
+        hideBtn.textContent = panelColsHidden ? "👁 Show Cols" : "🙈 Hide Cols";
+        renderChips();
+        renderList();
+    });
+}
+
+function closePanel() {
+    document.getElementById(PANEL_ID)?.remove();
+    chipsBox = null;
+    listBox = null;
+}
+
+function togglePanel() {
+    const open = Boolean(document.getElementById(PANEL_ID));
+    if (open) closePanel();
+    else openPanel();
+    try {
+        localStorage.setItem(PANEL_OPEN_KEY, open ? "0" : "1");
+    } catch {}
+}
+
+function mountLauncher() {
+    if (document.getElementById(LAUNCH_ID)) return;
+    const th = T();
+    const b = el(
+        "button",
+        "position:fixed;bottom:20px;right:20px;z-index:2147483646;" +
+            "padding:9px 13px;border-radius:20px;cursor:pointer;" +
+            `background:${th.bg};color:${th.fg};border:1px solid ${th.border};` +
+            "box-shadow:0 4px 18px rgba(0,0,0,0.28);" +
+            "font-family:'Fira Code',Consolas,monospace;font-size:12px;",
+        "⌗ Fields",
+    );
+    b.id = LAUNCH_ID;
+    b.title = "JSON field extractor";
+    b.addEventListener("click", togglePanel);
+    document.body.appendChild(b);
+}
+
+// Keep the panel in step with edits made from the popup
+try {
+    chrome.storage?.onChanged?.addListener((changes, area) => {
+        if (area !== "local" || !changes.extractFields) return;
+        if (!document.getElementById(PANEL_ID)) return;
+        panelFields = changes.extractFields.newValue || [];
+        renderChips();
+        renderList();
+    });
+} catch {}
+
+// New search results → the discovered field list may have changed
+window.addEventListener("message", (e) => {
+    if (e.source !== window || e.data?.type !== "__LF_HITS__") return;
+    if (document.getElementById(PANEL_ID)) setTimeout(renderList, 450);
+});
+
+// ── Page UI bootstrap ─────────────────────────────────────────────────────────
+// The content script runs everywhere; the query bar is what makes this Discover.
+(async function initPageUI() {
+    const ta = await waitFor(() => findElement(SELECTORS.queryInput), 20000, 400);
+    if (!ta) return;
+    watchQueryBar();
+    mountLauncher();
+    let open = "0";
+    try {
+        open = localStorage.getItem(PANEL_OPEN_KEY) || "0";
+    } catch {}
+    if (open === "1") openPanel();
+})();
 
 // ── Message listener ──────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -1187,6 +3004,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             case "extractFields":
                 sendResponse(startExtract(msg.fields));
                 break;
+            case "applyExtract":
+                applyExtract(msg).then(sendResponse);
+                break;
+            case "setQueryLanguage":
+                setQueryLanguage(msg).then(sendResponse);
+                break;
+            case "selectFields":
+                selectFields(msg).then(sendResponse);
+                break;
             case "stopExtract":
                 sendResponse(stopExtract());
                 break;
@@ -1196,18 +3022,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             case "showColumn":
                 sendResponse(showColumn());
                 break;
-            case "setTheme": {
-                activeTheme = msg.theme || "light";
-                try {
-                    localStorage.setItem("lf_theme", activeTheme);
-                } catch {}
-                if (activeFields.length) {
-                    stopExtract();
-                    setTimeout(() => startExtract(activeFields), 50);
-                }
-                sendResponse({ ok: true });
+            case "setTheme":
+                sendResponse(setTheme(msg.theme));
                 break;
-            }
             default:
                 sendResponse({ ok: false, error: "Unknown action" });
         }

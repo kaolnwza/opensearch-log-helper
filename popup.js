@@ -241,8 +241,6 @@ const EXTRACT_PRESETS = {
   dev: ["coalesce(time, timestamp)", "level", "coalesce(msg, message)", "loan_app_id", "trace_id", "span_id", "request_header.Wf-traceparent"],
 };
 
-const HIDE_FIELDS = ["Time", "kubernetes.container_name", "json_payload"];
-
 $("preset-extract").addEventListener("change", (e) => {
   const fields = EXTRACT_PRESETS[e.target.value];
   if (!fields) return;
@@ -256,27 +254,51 @@ function setHideBtnState(hidden) {
   $("btn-hide-col").textContent = hidden ? "👁 Show Columns" : "🙈 Hide Columns";
 }
 
-$("btn-extract-apply").addEventListener("click", async () => {
+// The content script runs the whole sequence (Lucene → json_payload column →
+// extract → hide columns) so the auto path and this button share one code path.
+async function applyExtract() {
   extractInput.flush();
   const fields = extractInput.getTags();
-  if (!fields.length) return showStatus("Add at least one field name", "error");
-  const res = await sendToContent("extractFields", { fields });
-  if (res?.ok) {
-    // Auto-hide all three columns by default
-    await sendToContent("hideColumns", { fields: HIDE_FIELDS });
-    setHideBtnState(true);
-    const found = res.found ?? "?";
-    const src = found === 0 ? " (waiting for data…)" : ` — ${found} row${found !== 1 ? "s" : ""} ✓`;
-    showStatus(`Extracting ${fields.join(", ")}${src}`);
-  } else {
-    showStatus(res?.error || "Failed", "error");
+  if (!fields.length) {
+    showStatus("Add at least one field name", "error");
+    return false;
   }
+
+  const res = await sendToContent("applyExtract", { fields });
+  if (!res?.ok) {
+    showStatus(res?.error || "Failed", "error");
+    return false;
+  }
+
+  setHideBtnState(true);
+  const found = res.found ?? "?";
+  const src = found === 0 ? " (waiting for data…)" : ` — ${found} row${found !== 1 ? "s" : ""} ✓`;
+  if (res.lang && !res.lang.ok) showStatus(`Lucene switch failed: ${res.lang.error}`, "error");
+  else showStatus(`Extracting ${fields.join(", ")}${src}`);
+  return true;
+}
+
+$("btn-extract-apply").addEventListener("click", applyExtract);
+
+// Auto mode: content.js re-applies the saved fields on every page load / query
+// change. Turning it on applies right away so the toggle is the only click.
+$("chk-extract-auto").addEventListener("change", async (e) => {
+  const on = e.target.checked;
+  chrome.storage?.local?.set({ extractAuto: on });
+  if (!on) return showStatus("Auto-apply off");
+  if (await applyExtract()) showStatus("Auto-apply on — no more clicking ✓");
 });
+
+function setAutoOff() {
+  $("chk-extract-auto").checked = false;
+  chrome.storage?.local?.set({ extractAuto: false });
+}
 
 $("btn-extract-stop").addEventListener("click", async () => {
   const res = await sendToContent("stopExtract");
   await sendToContent("showColumn");
   setHideBtnState(false);
+  setAutoOff(); // otherwise the next page load brings it straight back
   showStatus(res?.ok ? "Extraction stopped" : res?.error || "Failed", res?.ok ? "success" : "error");
 });
 
@@ -284,7 +306,7 @@ let colHidden = false;
 $("btn-hide-col").addEventListener("click", async () => {
   colHidden = !colHidden;
   if (colHidden) {
-    await sendToContent("hideColumns", { fields: HIDE_FIELDS });
+    await sendToContent("hideColumns");
   } else {
     await sendToContent("showColumn");
   }
@@ -294,6 +316,7 @@ $("btn-hide-col").addEventListener("click", async () => {
 $("btn-clear-extract").addEventListener("click", async () => {
   extractInput.clear();
   await sendToContent("stopExtract");
+  setAutoOff();
   showStatus("Extraction cleared");
 });
 
@@ -310,16 +333,16 @@ $("btn-clear").addEventListener("click", async () => {
 
 // ── Restore saved state ───────────────────────────────────────────────────
 chrome.storage?.local?.get(
-  ["containerTags", "payloadTags", "payloadMode", "extractFields"],
+  ["containerTags", "payloadTags", "payloadMode", "extractFields", "extractAuto"],
   (data) => {
     if (data.payloadMode) $("mode-payload").value = data.payloadMode;
     containerInput.restore(data.containerTags);
     payloadInput.restore(data.payloadTags);
     extractInput.restore(data.extractFields);
+    $("chk-extract-auto").checked = Boolean(data.extractAuto);
     updateHint();
 
-    // Keep the saved field list visible, but don't auto-run the extractor on
-    // popup open / refresh — the user re-applies with "Apply to Table" when
-    // they want it. (Extraction also auto-stops when the query changes.)
+    // Opening the popup never re-runs the extractor itself — with auto mode on
+    // the content script has already applied the saved fields on page load.
   }
 );
