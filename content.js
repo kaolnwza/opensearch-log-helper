@@ -1667,6 +1667,132 @@ function saveQuerySource(raw) {
     } catch {}
 }
 
+// ── and/or → AND/OR ──────────────────────────────────────────────────────────
+// Lucene reads a lowercase `and` as a search term, not an operator, so the
+// word is upper-cased the moment you finish typing it.
+function autoUpperBool() {
+    const v = editorTA.value;
+    const pos = editorTA.selectionStart;
+    if (pos !== editorTA.selectionEnd) return;
+
+    const m = v.slice(0, pos).match(/(^|[\s("])(and|or)([\s()])$/);
+    if (!m || m[2] === m[2].toUpperCase()) return;
+
+    // Not inside a comment or a "quoted string"
+    const lineStart = v.lastIndexOf("\n", pos - 1) + 1;
+    const upto = v.slice(lineStart, pos);
+    if (stripLineComment(upto).length < upto.length) return;
+    if ((upto.match(/(^|[^\\])"/g) || []).length % 2) return;
+
+    const start = pos - m[0].length + m[1].length;
+    const end = start + m[2].length;
+    editorTA.selectionStart = start;
+    editorTA.selectionEnd = end;
+    // execCommand keeps native undo working; the caret goes back where it was
+    if (!document.execCommand("insertText", false, m[2].toUpperCase()))
+        editorTA.value = v.slice(0, start) + m[2].toUpperCase() + v.slice(end);
+    editorTA.selectionStart = editorTA.selectionEnd = pos;
+}
+
+// Safety net for a query that never got the finishing keystroke — a standalone
+// and/or between clauses is always the operator, never a term.
+function upperBooleans(q) {
+    const ranges = protectedRanges(q);
+    return q.replace(/(^|[\s(])(and|or)(?=[\s)]|$)/gi, (full, pre, word, idx) =>
+        ranges.some(([a, b]) => idx > a && idx < b)
+            ? full
+            : pre + word.toUpperCase(),
+    );
+}
+
+// `!`, `-` and `+` are prefix operators — OpenSearch needs them stuck to the
+// group they negate, so `!\n(…)` must not join up as `! (…)`.
+function glueUnary(q) {
+    const ranges = protectedRanges(q);
+    return q.replace(/([!+-])\s+(?=\()/g, (full, op, idx) =>
+        ranges.some(([a, b]) => idx > a && idx < b) ? full : op,
+    );
+}
+
+// ── Formatter ────────────────────────────────────────────────────────────────
+// Breaks a query onto one clause per line, indents parenthesised groups,
+// upper-cases the booleans and tightens `field = "v"` to `field="v"`. Comments,
+// quoted strings and /regex/ literals are moved but never rewritten.
+const FMT_TOKENS =
+    /(--[^\n]*|\/\/[^\n]*|#[^\n]*)|([()])|\b(AND|OR|NOT|TO)\b|((?:"(?:\\.|[^"\\])*"|[^\s()])+)|(\s+)/gi;
+
+function formatQuery(text) {
+    const lines = [];
+    let cur = "";
+    let indent = 0;
+    let tight = false; // the next token joins the previous one directly
+
+    const flush = () => {
+        if (cur.trim()) lines.push("  ".repeat(Math.max(0, indent)) + cur.trim());
+        cur = "";
+        tight = false;
+    };
+    const push = (s, joinTight) => {
+        cur = !cur || joinTight ? cur + s : `${cur} ${s}`;
+    };
+
+    let m;
+    FMT_TOKENS.lastIndex = 0;
+    while ((m = FMT_TOKENS.exec(text))) {
+        const [, comment, paren, kw, atom, space] = m;
+
+        if (comment) {
+            push(comment, false); // own line when cur is empty, trailing otherwise
+            flush();
+        } else if (paren === "(") {
+            push("(", tight);
+            flush();
+            indent++;
+        } else if (paren === ")") {
+            flush();
+            indent--;
+            push(")", false);
+        } else if (kw) {
+            const upper = kw.toUpperCase();
+            if (upper === "AND" || upper === "OR") flush(); // one clause per line
+            push(upper, false);
+        } else if (atom) {
+            push(atom, tight || /^(?:=~|=|:)/.test(atom));
+            // `!`, `-` and `+` bind to whatever follows — `!(` never `! (`
+            tight = /(?:=~|=|:|[!+-])$/.test(atom);
+            continue; // keep `tight` for the value that follows
+        } else if (space) {
+            // `field = "v"` → the space must not break the tight join
+            if (!space.includes("\n")) continue;
+            flush(); // your own line breaks are kept
+            if ((space.match(/\n/g) || []).length > 1 && lines.at(-1) !== "")
+                lines.push(""); // and so is one blank separator line
+        }
+        tight = false;
+    }
+    flush();
+    return lines.join("\n");
+}
+
+function formatEditor() {
+    if (!editorTA) return;
+    const src = editorTA.value;
+    const out = formatQuery(src);
+    if (out === src) return lfToast("Already formatted");
+
+    // Put the caret back on the same character, wherever it moved to
+    const before = src.slice(0, editorTA.selectionStart).replace(/\s/g, "").length;
+    let i = 0;
+    let seen = 0;
+    while (i < out.length && seen < before) {
+        if (!/\s/.test(out[i])) seen++;
+        i++;
+    }
+    setValue(editorTA, out);
+    editorTA.selectionStart = editorTA.selectionEnd = i;
+    editorTA.focus();
+}
+
 // ── Syntax colouring ─────────────────────────────────────────────────────────
 const escHtml = (s) =>
     s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -1730,18 +1856,43 @@ function paintEditor() {
 }
 
 // ── Running the query ────────────────────────────────────────────────────────
+// Put the query in OpenSearch's bar and submit it — without ever focusing that
+// box. Focusing it opens the recent-searches list, and the Enter key we used to
+// send would then pick a history entry instead of running what we just wrote.
+function pushQueryToBar(input, clean) {
+    setNativeValue(input, clean);
+    input.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", keyCode: 27, bubbles: true }),
+    );
+    input.blur?.();
+
+    setTimeout(() => {
+        const btn =
+            document.querySelector('[data-test-subj="querySubmitButton"]') ||
+            document.querySelector('button[aria-label="Search"]') ||
+            document.querySelector("form.osdQueryBar button[type='submit']");
+        if (btn) return btn.click();
+        // No submit button on this build — Enter is the only way left
+        for (const type of ["keydown", "keyup"])
+            input.dispatchEvent(
+                new KeyboardEvent(type, { key: "Enter", keyCode: 13, bubbles: true }),
+            );
+    }, 60);
+
+    setTimeout(() => editorTA?.focus(), 400); // keep typing where you were
+}
+
 function runEditorQuery() {
     if (!editorTA) return;
     const src = editorTA.value;
-    const clean = compileQuerySugar(stripQueryComments(src));
+    const clean = glueUnary(
+        upperBooleans(compileQuerySugar(stripQueryComments(src))),
+    );
     const input = queryBarEl();
     if (!input) return lfToast("Query bar not found — is this the Discover page?");
 
     saveQuerySource(src);
-    input.focus();
-    setNativeValue(input, clean);
-    submitQuery(input);
-    setTimeout(() => editorTA?.focus(), 500); // keep typing where you were
+    pushQueryToBar(input, clean);
 
     const n = countCommentLines(src);
     lfToast(
@@ -2093,6 +2244,9 @@ function buildEditor() {
         toggleLineComment(editorTA);
     });
 
+    const fmtBtn = editorButton("≡ Format", "Format the query (⌥⇧F)");
+    fmtBtn.addEventListener("click", formatEditor);
+
     const pullBtn = editorButton("⇩ Pull", "Copy the query that is currently applied into the editor");
     pullBtn.addEventListener("click", () => {
         const input = queryBarEl();
@@ -2107,7 +2261,7 @@ function buildEditor() {
         editorTA.focus();
     });
 
-    [runBtn, cmtBtn, pullBtn, clrBtn].forEach((b) => bar.appendChild(b));
+    [runBtn, cmtBtn, fmtBtn, pullBtn, clrBtn].forEach((b) => bar.appendChild(b));
     box.appendChild(bar);
 
     // ── Code area: colour layer + transparent textarea on top ────────────────
@@ -2134,6 +2288,7 @@ function buildEditor() {
         `outline:none;${metrics}`;
 
     editorTA.addEventListener("input", () => {
+        autoUpperBool();
         paintEditor();
         saveQuerySource(editorTA.value);
         updateSuggest();
@@ -2180,6 +2335,10 @@ function buildEditor() {
         } else if (e.key === "ArrowDown" && e.altKey) {
             e.preventDefault();
             duplicateLines(editorTA);
+        } else if (e.altKey && e.shiftKey && e.code === "KeyF") {
+            // e.code, not e.key — ⌥⇧F is a dead key on a Mac layout
+            e.preventDefault();
+            formatEditor();
         } else if (e.key === "Tab") {
             e.preventDefault();
             const { selectionStart: s, selectionEnd: t, value } = editorTA;
@@ -2204,7 +2363,7 @@ function buildEditor() {
         el(
             "span",
             "flex:1;",
-            '⌘↵ run · ⌘/ comment · ⌥↓ copy line · f="v" → f:"v" · f=~"v" → f:/.*v.*/ · comments: -- // #',
+            '⌘↵ run · ⌘/ comment · ⌥⇧F format · ⌥↓ copy line · f="v" → f:"v" · f=~"v" → f:/.*v.*/ · comments: -- // #',
         ),
     );
     foot.appendChild(el("span", "letter-spacing:2px;", "⋯"));
@@ -2348,51 +2507,6 @@ function setFilterBarHidden(on) {
     applyFilterBarHidden();
 }
 
-// ── Left sidebar ──────────────────────────────────────────────────────────────
-// Collapsed on load and on every query/navigation change, so the log table gets
-// the whole width.
-const SIDEBAR_TOGGLE =
-    '[data-test-subj="dscSideBarCollapse"],[data-test-subj="discoverSidebarCollapse"],' +
-    '.euiResizableToggleButton,button[aria-label*="ollapse"],button[title*="ollapse"]';
-const SIDEBAR_KEY = "lf_collapse_sidebar";
-
-let collapseSidebarOn = true;
-try {
-    collapseSidebarOn = localStorage.getItem(SIDEBAR_KEY) !== "0";
-} catch {}
-let lastCollapse = 0;
-
-function collapseSidebar() {
-    for (const b of document.querySelectorAll(SIDEBAR_TOGGLE)) {
-        // Only the control on the left edge — never some unrelated "collapse"
-        if (b.getBoundingClientRect().left > 300) continue;
-        if (b.getAttribute("aria-expanded") === "false") continue;
-        const label = `${b.getAttribute("aria-label") || ""} ${b.title || ""}`.toLowerCase();
-        if (label.includes("expand") || label.includes("show")) continue; // would open it
-        b.click();
-        lastCollapse = Date.now();
-        return true;
-    }
-    return false;
-}
-
-// Retries while Discover is still rendering its sidebar
-async function autoCollapseSidebar() {
-    if (!collapseSidebarOn) return;
-    if (Date.now() - lastCollapse < 10000) return; // don't fight a manual re-open
-    await waitFor(collapseSidebar, 8000, 400);
-}
-
-function setCollapseSidebar(on) {
-    collapseSidebarOn = on;
-    try {
-        localStorage.setItem(SIDEBAR_KEY, on ? "1" : "0");
-    } catch {}
-    if (on) {
-        lastCollapse = 0;
-        autoCollapseSidebar();
-    }
-}
 
 function mountChartToggle() {
     const chart = findChart();
@@ -2433,13 +2547,7 @@ function watchQueryBar() {
     };
     tick();
     setInterval(tick, 1000);
-    autoCollapseSidebar();
 }
-
-// Every query / time-range / navigation change re-collapses the sidebar
-window.addEventListener("message", (e) => {
-    if (e.source === window && e.data?.type === "__LF_NAV__") autoCollapseSidebar();
-});
 
 // ── In-page extractor panel ───────────────────────────────────────────────────
 const PANEL_ID = "lf-panel";
@@ -2892,7 +3000,6 @@ function openPanel() {
         body.appendChild(row);
     };
     check("Hide the “Add filter” bar", filterBarHidden, setFilterBarHidden);
-    check("Collapse the left sidebar", collapseSidebarOn, setCollapseSidebar);
 
     body.appendChild(
         el(
@@ -2932,6 +3039,22 @@ function togglePanel() {
         localStorage.setItem(PANEL_OPEN_KEY, open ? "0" : "1");
     } catch {}
 }
+
+// Clicking anywhere outside the panel closes it. mousedown, not click, so a
+// drag that starts on the panel and ends on the page doesn't count as outside.
+document.addEventListener(
+    "mousedown",
+    (e) => {
+        const panel = document.getElementById(PANEL_ID);
+        if (!panel || panel.contains(e.target)) return;
+        if (e.target?.closest?.(`#${LAUNCH_ID}`)) return; // the launcher toggles
+        closePanel();
+        try {
+            localStorage.setItem(PANEL_OPEN_KEY, "0");
+        } catch {}
+    },
+    true,
+);
 
 function mountLauncher() {
     if (document.getElementById(LAUNCH_ID)) return;
