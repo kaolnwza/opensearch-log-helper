@@ -636,6 +636,11 @@ function getNestedValue(obj, path) {
     return path.split(".").reduce((cur, k) => cur?.[k], obj);
 }
 
+// Set on objects that only parsed once we closed the JSON ourselves: the text
+// was cut off, so whatever sat at the cut came through short. A Symbol so it
+// stays out of Object.entries, JSON.stringify, and the field walkers.
+const JSON_REPAIRED = Symbol("lf-json-repaired");
+
 // Full JSON parse with truncated-JSON fallbacks
 function tryParseJson(text) {
     const s = text.trim();
@@ -645,7 +650,10 @@ function tryParseJson(text) {
     } catch {}
     for (const sfx of ['"}', '"}}', '"}}}', "}}", "}}}", "}}}}"]) {
         try {
-            return JSON.parse(s + sfx);
+            const obj = JSON.parse(s + sfx);
+            if (obj && typeof obj === "object")
+                Object.defineProperty(obj, JSON_REPAIRED, { value: true });
+            return obj;
         } catch {}
     }
     return null;
@@ -879,7 +887,396 @@ function resolveSpec(spec, parsed, regexResult) {
     return { label: p.field, displayValue: dv };
 }
 
-function buildOverlay(parsed, regexResult, specs, rawJson) {
+// ── Click-to-filter ──────────────────────────────────────────────────────────
+// The value under the cursor is nearly always the next thing you want to filter
+// on, so every overlay cell carries filter-for / filter-out / copy.
+
+// Inside a Lucene phrase only \ and " need escaping
+function luceneQuote(value) {
+    return `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+// Words seen in the table headers, refreshed once per extraction pass — this
+// runs for every rendered cell, so it must not touch the DOM per call.
+let headerWords = new Set();
+const fieldQueryCache = new Map();
+
+function refreshHeaderWords(headers) {
+    headerWords = new Set();
+    (headers || getHeaderCells()).forEach((h) =>
+        (h.textContent || "")
+            .trim()
+            .split(/\s+/)
+            .forEach((w) => w && headerWords.add(w)),
+    );
+    fieldQueryCache.clear();
+}
+
+// Overlay columns are named by their path *inside* json_payload, but a query
+// needs the real index field. A table column of exactly that name wins: those
+// are top-level _source fields (level, kubernetes.container_name) that live
+// outside json_payload.
+function queryFieldFor(path) {
+    const hit = fieldQueryCache.get(path);
+    if (hit) return hit;
+    if (!headerWords.size) refreshHeaderWords();
+
+    let field;
+    if (headerWords.has(path)) field = path;
+    else if (headerWords.has(`json_payload.${path}`)) field = `json_payload.${path}`;
+    else if (path === "kubernetes" || path.startsWith("kubernetes."))
+        field = path;
+    else field = `json_payload.${path}`;
+
+    fieldQueryCache.set(path, field);
+    return field;
+}
+
+// What the editor would run right now
+function editorClean() {
+    if (!editorTA) return null;
+    return glueUnary(
+        upperBooleans(compileQuerySugar(stripQueryComments(editorTA.value))),
+    );
+}
+
+// Add a clause to the running query and re-run it. The in-page editor is the
+// source of truth while it still matches the bar; once the two have drifted (a
+// query typed into their bar, or one restored from the URL) the bar wins and
+// the editor is re-seeded from it, so the next click stays consistent.
+function appendClause(clause) {
+    const input = queryBarEl();
+    if (!input) return lfToast("Query bar not found — is this the Discover page?");
+    const bar = (input.value || "").trim();
+    const clean = editorClean();
+
+    if (editorTA && (clean || "") === bar) {
+        const src = editorTA.value.replace(/\s+$/, "");
+        setValue(
+            editorTA,
+            src ? `${src}\n${bar ? "AND " : ""}${clause}` : clause,
+        );
+        runEditorQuery();
+        return;
+    }
+
+    const next = bar ? `${bar} AND ${clause}` : clause;
+    if (editorTA) setValue(editorTA, next);
+    pushQueryToBar(input, next);
+    lfToast("Filter applied");
+}
+
+function filterForValue(path, value, negate) {
+    const clause = `${negate ? "NOT " : ""}${queryFieldFor(path)}:${luceneQuote(value)}`;
+    appendClause(clause);
+}
+
+async function copyValue(value) {
+    try {
+        await navigator.clipboard.writeText(String(value));
+        lfToast("Copied");
+    } catch {
+        lfToast("Copy failed");
+    }
+}
+
+// ── Trace pivot ──────────────────────────────────────────────────────────────
+// "Show me this whole request." One click drops every other filter, queries the
+// correlation id across all containers, and widens the time range around the
+// row — in a new tab, so the view you came from survives.
+
+// The correlation id we actually carry is the x-request-id header. Which of
+// these paths it lands on depends on the service, so try them in order.
+const REQUEST_ID_PATHS = [
+    "x-request-id",
+    "request_header.x-request-id",
+    "request_header.X-Request-Id",
+    "headers.x-request-id",
+];
+// Weaker ids — only used when no x-request-id is on the row
+const TRACE_FIELDS = ["loan_app_id", "trace_id", "span_id", "request_id"];
+const TIME_FIELDS = ["time", "timestamp", "@timestamp", "ts"];
+const TRACE_WINDOW_MIN = 5;
+
+const REQUEST_ID_KEY = /^x-request-id$/i;
+
+// Header casing and nesting vary by service, so when the known paths miss, look
+// for the key itself in the first few levels of the payload.
+function findRequestId(obj, prefix = "", depth = 1) {
+    if (!obj || typeof obj !== "object" || depth > 3) return null;
+    for (const [k, v] of Object.entries(obj)) {
+        const path = prefix ? `${prefix}.${k}` : k;
+        if (REQUEST_ID_KEY.test(k) && v && typeof v !== "object")
+            return { field: path, value: String(v) };
+        const hit = findRequestId(v, path, depth + 1);
+        if (hit) return hit;
+    }
+    return null;
+}
+
+// First of `fields` this row actually carries, from the payload or the regex
+// fallback. Objects are skipped — they make no sense as a query term.
+function firstValue(parsed, regexResult, fields) {
+    for (const f of fields) {
+        let v = parsed ? getNestedValue(parsed, f) : undefined;
+        if (v === undefined || v === null || v === "") v = regexResult?.[f];
+        if (v === undefined || v === null || v === "" || typeof v === "object")
+            continue;
+        return { field: f, value: String(v) };
+    }
+    return null;
+}
+
+// The row's payload as the search response gave it — whole, whatever the table
+// chose to render. Rows are indexed the same way pass 2 indexes them.
+function payloadForRow(row) {
+    if (!row || !cachedPayloads.length) return null;
+    const dataRows = [...document.querySelectorAll("tbody tr")].filter(
+        (tr) => !tr.classList.contains(EXTRACT_ROW_CLASS),
+    );
+    const idx = dataRows.indexOf(row);
+    const p = idx >= 0 ? cachedPayloads[idx] : null;
+    return p && typeof p === "object" ? p : null;
+}
+
+// The id to follow: x-request-id first, wherever it sits, then the fallbacks.
+function traceIdOf(parsed, regexResult) {
+    return (
+        firstValue(parsed, regexResult, REQUEST_ID_PATHS) ||
+        findRequestId(parsed) ||
+        firstValue(parsed, regexResult, TRACE_FIELDS)
+    );
+}
+
+// A cell the table cut off leaves tryParseJson to close the dangling string for
+// us, so the id read from the DOM can be a prefix of the real one — and a prefix
+// matches nothing. An x-request-id is opaque, so a short one is indistinguishable
+// from a real one by shape; the repair flag is the only way to tell. The
+// intercepted response is never cut, so prefer it and mark what comes from a
+// payload we know was patched up.
+function traceIdForRow(parsed, regexResult, row) {
+    const full = payloadForRow(row);
+    const fromFull = full && traceIdOf(full, {});
+    if (fromFull) return fromFull;
+
+    const hit = traceIdOf(parsed, regexResult);
+    if (!hit) return null;
+    return parsed?.[JSON_REPAIRED] ? { ...hit, truncated: true } : hit;
+}
+
+// One field, one term: the id exactly as it was logged, whole.
+function traceClause(hit) {
+    return `${queryFieldFor(hit.field)}:${luceneQuote(hit.value.trim())}`;
+}
+
+// A ±5 min window is unforgiving: a timestamp that is merely wrong sends the
+// pivot to a range with nothing in it, which looks exactly like "the query
+// matched nothing". So anything outside the range logs plausibly carry is
+// rejected, and we fall back to a source we trust more.
+const TIME_FLOOR = Date.UTC(2000, 0, 1);
+function plausibleTime(t) {
+    return Number.isFinite(t) && t > TIME_FLOOR && t < Date.now() + 864e5;
+}
+
+// A payload "time" is as often an elapsed-ms number as a timestamp, and
+// Date.parse reads a bare "152" as the year 151 rather than failing — so only
+// 10/13-digit epochs are read as numbers, and other digit strings are refused.
+function parseTimeValue(raw) {
+    if (/^\d{13}$/.test(raw)) return Number(raw);
+    if (/^\d{10}$/.test(raw)) return Number(raw) * 1000;
+    if (/^[\d.]+$/.test(raw)) return null;
+    const t = Date.parse(raw);
+    return Number.isNaN(t) ? null : t;
+}
+
+// Epoch ms for the row: the payload's own timestamp, else the Time column.
+function rowTime(parsed, regexResult, row) {
+    const hit = firstValue(parsed, regexResult, TIME_FIELDS);
+    if (hit) {
+        const t = parseTimeValue(hit.value.trim());
+        if (plausibleTime(t)) return t;
+    }
+    if (!row) return null;
+    const headers = getHeaderCells();
+    const idx = headers.findIndex(
+        (h) => (h.textContent || "").trim().split(/\s+/)[0] === "Time",
+    );
+    if (idx < 0) return null;
+    const cells = [
+        ...row.querySelectorAll(":scope > td"),
+        ...row.querySelectorAll(":scope > [role='gridcell']"),
+    ];
+    const text = (cells[idx]?.textContent || "").trim();
+    // OpenSearch prints "Aug 6, 2026 @ 22:04:11.123" — the @ is not parseable
+    const t = Date.parse(text.replace(" @ ", " "));
+    return plausibleTime(t) ? t : null;
+}
+
+// Rison quotes with ! — so ! and ' are the two characters to escape
+function risonEscape(s) {
+    return String(s).replace(/!/g, "!!").replace(/'/g, "!'");
+}
+
+// Replace `key` … up to its matching ")" — the value may nest parens (a filter
+// clause does) and may hold quoted strings, so bracket counting is the only
+// way to find the end.
+function replaceBalanced(s, key, replacement, from = 0) {
+    const start = s.indexOf(key, from);
+    if (start < 0) return { out: s, changed: false, end: -1 };
+
+    let i = start + key.length; // just past the opening paren
+    let depth = 1;
+    let quoted = false;
+    while (i < s.length && depth > 0) {
+        const c = s[i];
+        if (quoted) {
+            if (c === "!") i++; // rison escape — skip what follows
+            else if (c === "'") quoted = false;
+        } else if (c === "'") quoted = true;
+        else if (c === "(") depth++;
+        else if (c === ")") depth--;
+        i++;
+    }
+    if (depth !== 0) return { out: s, changed: false, end: -1 };
+    return {
+        out: s.slice(0, start) + replacement + s.slice(i),
+        changed: true,
+        end: start + replacement.length,
+    };
+}
+
+// The Discover URL with our query, no filters, and a window around `from`/`to`.
+// Data-explorer keeps the query in _q, classic Discover in _a; both put the
+// time range in _g — replacing every occurrence covers either layout.
+function pivotUrl(href, query, fromISO, toISO) {
+    let out = href;
+    let changedQuery = false;
+    let changedTime = false;
+
+    // Pinned filter badges would survive the query swap and hide the trace
+    for (let at = 0; ; ) {
+        const r = replaceBalanced(out, "filters:!(", "filters:!()", at);
+        if (!r.changed) break;
+        out = r.out;
+        at = r.end;
+    }
+
+    out = out.replace(/query:'(?:!.|[^'])*'/g, () => {
+        changedQuery = true;
+        return `query:'${risonEscape(query)}'`;
+    });
+
+    if (fromISO && toISO) {
+        const r = replaceBalanced(
+            out,
+            "time:(",
+            `time:(from:'${fromISO}',to:'${toISO}')`,
+        );
+        out = r.out;
+        changedTime = r.changed;
+    }
+    return { url: out, changedQuery, changedTime };
+}
+
+function tracePivot(parsed, regexResult, row) {
+    const id = traceIdForRow(parsed, regexResult, row);
+    if (!id) return lfToast("No request id on this row");
+    // Say so rather than run a query that cannot match
+    if (id.truncated)
+        return lfToast(
+            "Request id looks cut off — re-run the search so the full row is loaded",
+            4000,
+        );
+
+    const query = traceClause(id);
+    const at = rowTime(parsed, regexResult, row);
+    const from = at
+        ? new Date(at - TRACE_WINDOW_MIN * 60000).toISOString()
+        : null;
+    const to = at ? new Date(at + TRACE_WINDOW_MIN * 60000).toISOString() : null;
+
+    // The hash is usually written raw, but a build that percent-encodes it
+    // would not match — decode and retry before giving up.
+    let res = pivotUrl(location.href, query, from, to);
+    if (!res.changedQuery) {
+        try {
+            res = pivotUrl(decodeURIComponent(location.href), query, from, to);
+        } catch {}
+    }
+
+    // No query state in the URL to rewrite — run it here instead
+    if (!res.changedQuery) {
+        if (!editorTA) return lfToast("Could not follow the trace from this page");
+        setValue(editorTA, query);
+        runEditorQuery();
+        return lfToast(`Following ${id.field} in this tab · time range unchanged`);
+    }
+
+    window.open(res.url, "_blank");
+    lfToast(
+        `Following ${id.field} · ${
+            res.changedTime ? `±${TRACE_WINDOW_MIN} min` : "time range unchanged"
+        }`,
+    );
+}
+
+// Shown only while the cell is hovered — a CSS rule rather than two listeners
+// on every cell of every row.
+const ACTS_STYLE_ID = "lf-acts-style";
+const ACTS_CLASS = "lf-acts";
+
+function installActionStyle() {
+    if (document.getElementById(ACTS_STYLE_ID)) return;
+    const s = document.createElement("style");
+    s.id = ACTS_STYLE_ID;
+    s.textContent =
+        `.${EXTRACT_CLASS} .${ACTS_CLASS}{display:none;}` +
+        `.${EXTRACT_CLASS} [data-lf-field]:hover .${ACTS_CLASS}{display:flex;}`;
+    document.head.appendChild(s);
+}
+
+// The hover strip on one overlay cell
+function cellActions(path, value) {
+    const th = T();
+    const field = queryFieldFor(path);
+    const shown =
+        String(value).length > 40 ? `${String(value).slice(0, 40)}…` : value;
+
+    const box = document.createElement("div");
+    box.className = ACTS_CLASS;
+    box.style.cssText = "position:absolute;top:1px;right:9px;gap:2px;z-index:4;";
+
+    const mk = (text, title, run) => {
+        const b = document.createElement("button");
+        b.textContent = text;
+        b.title = title;
+        b.style.cssText =
+            "font-family:inherit;font-size:10px;line-height:1;padding:2px 5px;" +
+            `cursor:pointer;background:${th.bg};color:${th.fg};` +
+            `border:1px solid ${th.jsonBord};border-radius:3px;`;
+        // The row underneath expands on click and the header starts a drag —
+        // neither should react to a press on these.
+        b.addEventListener("mousedown", (e) => e.stopPropagation());
+        b.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            run();
+        });
+        box.appendChild(b);
+        return b;
+    };
+
+    mk("=", `Filter for  ${field}:"${shown}"`, () =>
+        filterForValue(path, value, false),
+    );
+    mk("≠", `Filter out  NOT ${field}:"${shown}"`, () =>
+        filterForValue(path, value, true),
+    );
+    mk("⧉", "Copy value", () => copyValue(value));
+    return box;
+}
+
+function buildOverlay(parsed, regexResult, specs, rawJson, row) {
     const th = T();
     const wrap = document.createElement("div");
     wrap.className = `${EXTRACT_CLASS} lf-ui`;
@@ -994,6 +1391,10 @@ function buildOverlay(parsed, regexResult, specs, rawJson) {
         col.appendChild(hdr);
         col.appendChild(val);
         col.appendChild(handle);
+
+        // Hover actions — only where there is a value to act on
+        if (hasVal) col.appendChild(cellActions(fieldName, resolved.displayValue));
+
         colRow.appendChild(col);
         any = true;
     });
@@ -1032,6 +1433,22 @@ function buildOverlay(parsed, regexResult, specs, rawJson) {
         btnGroup.style.cssText = "margin-left:10px;display:inline-flex;align-items:center;";
         const fullBtn = makeMiniBtn("⤢ Full");
         const copyBtn = makeMiniBtn("⧉ Copy");
+
+        // ── Follow this request across every container ───────────────────────
+        const traceId = traceIdForRow(parsed, regexResult, row);
+        if (traceId) {
+            const traceBtn = makeMiniBtn("⇱ Trace");
+            traceBtn.title =
+                `Follow  ${traceClause(traceId)}\n` +
+                `in a new tab — drops every other filter, ±${TRACE_WINDOW_MIN} min`;
+            traceBtn.addEventListener("click", (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                tracePivot(parsed, regexResult, row);
+            });
+            btnGroup.appendChild(traceBtn);
+        }
+
         btnGroup.appendChild(fullBtn);
         btnGroup.appendChild(copyBtn);
 
@@ -1192,6 +1609,8 @@ function processTableRows(fields) {
     let found = 0;
     const seenRows = new Set();
     const headers = getHeaderCells();
+    refreshHeaderWords(headers);
+    installActionStyle();
 
     // ── Pass 1: visible JSON cells (json_payload is a selected column) ───────
     collectCandidateCells().forEach((cell) => {
@@ -1221,7 +1640,7 @@ function processTableRows(fields) {
         const parsed = tryParseJson(jsonText);
         const regex = regexExtract(raw, fields);
         enrichFromRow(parentRow, fields, parsed, regex, headers);
-        const overlay = buildOverlay(parsed, regex, fields, jsonText);
+        const overlay = buildOverlay(parsed, regex, fields, jsonText, parentRow);
         if (!overlay) return;
 
         if (parentRow) {
@@ -1265,7 +1684,7 @@ function processTableRows(fields) {
                 : tryParseJson(String(payload));
         const jsonText = parsed ? JSON.stringify(parsed) : String(payload);
         const regex = regexExtract(jsonText, fields);
-        const overlay = buildOverlay(parsed, regex, fields, jsonText);
+        const overlay = buildOverlay(parsed, regex, fields, jsonText, row);
         if (!overlay) return;
 
         insertOverlayAfterRow(row, overlay, fieldKey);
@@ -2824,8 +3243,51 @@ function el(tag, css, text) {
     return e;
 }
 
-// Every field path present in the loaded logs — from the intercepted search
-// response when we have it, otherwise from the json_payload cells on screen.
+// Drag a floating panel around by its header, minus the controls that sit in it
+function makeDraggable(panel, head, skip = []) {
+    head.addEventListener("mousedown", (e) => {
+        if (skip.includes(e.target)) return;
+        e.preventDefault();
+        const rect = panel.getBoundingClientRect();
+        const dx = e.clientX - rect.left;
+        const dy = e.clientY - rect.top;
+        const onMove = (ev) => {
+            panel.style.left = ev.clientX - dx + "px";
+            panel.style.top = ev.clientY - dy + "px";
+            panel.style.right = "auto";
+            panel.style.bottom = "auto";
+        };
+        const onUp = () => {
+            document.removeEventListener("mousemove", onMove);
+            document.removeEventListener("mouseup", onUp);
+        };
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+    });
+}
+
+// Every log payload we can currently see — the intercepted search response
+// when we have it, otherwise whatever JSON is rendered on screen. `limit` caps
+// the DOM parsing, which is the expensive half.
+function loadedPayloads(limit = Infinity) {
+    if (cachedPayloads.length)
+        return cachedPayloads
+            .filter((p) => p && typeof p === "object")
+            .slice(0, limit);
+
+    const out = [];
+    for (const cell of collectCandidateCells()) {
+        if (out.length >= limit) break;
+        const raw = (cell.textContent || "").trim();
+        const start = raw.indexOf("{");
+        if (start < 0) continue;
+        const parsed = tryParseJson(raw.slice(start));
+        if (parsed) out.push(parsed);
+    }
+    return out;
+}
+
+// Every field path present in the loaded logs
 function discoverFields() {
     const paths = new Set();
     const walk = (obj, prefix, depth) => {
@@ -2837,24 +3299,7 @@ function discoverFields() {
                 walk(v, p, depth + 1);
         }
     };
-
-    cachedPayloads.slice(0, 40).forEach((p) => {
-        if (p && typeof p === "object") walk(p, "", 1);
-    });
-
-    if (!paths.size) {
-        let seen = 0;
-        for (const cell of collectCandidateCells()) {
-            if (seen >= 10) break;
-            const raw = (cell.textContent || "").trim();
-            const start = raw.indexOf("{");
-            if (start < 0) continue;
-            const parsed = tryParseJson(raw.slice(start));
-            if (!parsed) continue;
-            walk(parsed, "", 1);
-            seen++;
-        }
-    }
+    loadedPayloads(40).forEach((p) => walk(p, "", 1));
     return [...paths].sort();
 }
 
@@ -3064,25 +3509,7 @@ function openPanel() {
     });
     head.appendChild(close);
 
-    head.addEventListener("mousedown", (e) => {
-        if (e.target === close || e.target === themeSel) return;
-        e.preventDefault();
-        const rect = panel.getBoundingClientRect();
-        const dx = e.clientX - rect.left;
-        const dy = e.clientY - rect.top;
-        const onMove = (ev) => {
-            panel.style.left = ev.clientX - dx + "px";
-            panel.style.top = ev.clientY - dy + "px";
-            panel.style.right = "auto";
-            panel.style.bottom = "auto";
-        };
-        const onUp = () => {
-            document.removeEventListener("mousemove", onMove);
-            document.removeEventListener("mouseup", onUp);
-        };
-        document.addEventListener("mousemove", onMove);
-        document.addEventListener("mouseup", onUp);
-    });
+    makeDraggable(panel, head, [close, themeSel]);
     panel.appendChild(head);
 
     // ── Body ─────────────────────────────────────────────────────────────────
