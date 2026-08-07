@@ -48,7 +48,9 @@ function updateHint() {
 updateHint();
 
 // ── Generic tag-input factory ──────────────────────────────────────────────
-function makeTagInput({ boxId, inputId, storageKey }) {
+// storageKey persists the tags on its own; onChange is for tag lists that live
+// inside a larger stored object (the suggestion presets) and save themselves.
+function makeTagInput({ boxId, inputId, storageKey, onChange }) {
   let tags = [];
   let dragIndex = null;
 
@@ -115,7 +117,10 @@ function makeTagInput({ boxId, inputId, storageKey }) {
     save();
   }
 
-  function save() { chrome.storage?.local?.set({ [storageKey]: tags }); }
+  function save() {
+    if (storageKey) chrome.storage?.local?.set({ [storageKey]: tags });
+    onChange?.(tags.slice());
+  }
   function clear() { tags = []; render(); save(); }
   function flush() {
     const raw = $(inputId).value.trim();
@@ -320,6 +325,181 @@ $("btn-clear-extract").addEventListener("click", async () => {
   showStatus("Extraction cleared");
 });
 
+// ── Editor suggestion presets ─────────────────────────────────────────────
+// One preset per project: the field names the in-page editor completes, and
+// the values it offers after an operator. content.js picks the change up from
+// chrome.storage.local — no reload needed.
+let suggestStore = lfNormalizeStore(null);
+let valueField = "";  // field whose values the lower tag box is editing
+let nameMode = null;  // "new" | "rename" | "dup" while the name row is open
+
+const activePreset = () => lfActivePreset(suggestStore);
+
+function saveSuggestStore() {
+  chrome.storage?.local?.set({ [LF_SUGGEST_KEY]: suggestStore });
+}
+
+const suggestFieldInput = makeTagInput({
+  boxId: "suggest-field-box",
+  inputId: "input-suggest-field",
+  onChange: (fields) => {
+    activePreset().fields = fields;
+    saveSuggestStore();
+    renderValueFieldOptions();
+  },
+});
+
+const suggestValueInput = makeTagInput({
+  boxId: "suggest-value-box",
+  inputId: "input-suggest-value",
+  onChange: (values) => {
+    if (!valueField) return;
+    const preset = activePreset();
+    // An empty list is the same as no entry — the logs still supply values
+    if (values.length) preset.values[valueField] = values;
+    else delete preset.values[valueField];
+    saveSuggestStore();
+    renderContainerDatalist();
+  },
+});
+
+function fillSelect(sel, entries, selected) {
+  sel.textContent = "";
+  entries.forEach(([value, label]) => {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = label;
+    sel.appendChild(o);
+  });
+  sel.value = selected;
+}
+
+function renderPresetOptions() {
+  const entries = Object.entries(suggestStore.presets)
+    .map(([id, p]) => [id, p.name])
+    .sort((a, b) => a[1].localeCompare(b[1]));
+  fillSelect($("suggest-preset"), entries, suggestStore.active);
+}
+
+function renderValueFieldOptions() {
+  const preset = activePreset();
+  const fields = [...new Set([...preset.fields, ...Object.keys(preset.values)])];
+  if (!fields.includes(valueField)) valueField = fields[0] || "";
+
+  fillSelect($("suggest-value-field"), fields.map((f) => [f, f]), valueField);
+  $("suggest-value-field").disabled = !fields.length;
+
+  const input = $("input-suggest-value");
+  input.disabled = !valueField;
+  input.placeholder = valueField ? `Value for ${valueField}…` : "Add a field first";
+  suggestValueInput.restore(valueField ? (preset.values[valueField] || []).slice() : []);
+}
+
+// The Container Name box picks from the same list the editor suggests
+function renderContainerDatalist() {
+  const dl = $("container-suggestions");
+  if (!dl) return;
+  dl.textContent = "";
+  (activePreset().values["kubernetes.container_name"] || []).forEach((v) => {
+    const o = document.createElement("option");
+    o.value = v;
+    dl.appendChild(o);
+  });
+}
+
+function renderSuggestUI() {
+  renderPresetOptions();
+  suggestFieldInput.restore(activePreset().fields.slice());
+  renderValueFieldOptions();
+  renderContainerDatalist();
+}
+
+$("suggest-preset").addEventListener("change", (e) => {
+  suggestStore.active = e.target.value;
+  saveSuggestStore();
+  renderSuggestUI();
+  showStatus(`Preset: ${activePreset().name}`);
+});
+
+$("suggest-value-field").addEventListener("change", (e) => {
+  valueField = e.target.value;
+  renderValueFieldOptions();
+});
+
+// ── Naming row (New / Rename / Duplicate all go through it) ───────────────
+function openNameRow(mode) {
+  nameMode = mode;
+  const input = $("input-suggest-name");
+  input.value =
+    mode === "rename" ? activePreset().name :
+    mode === "dup"    ? `${activePreset().name} copy` : "";
+  $("suggest-name-row").classList.remove("hidden");
+  input.focus();
+  input.select();
+}
+
+function closeNameRow() {
+  nameMode = null;
+  $("suggest-name-row").classList.add("hidden");
+}
+
+function commitName() {
+  const name = $("input-suggest-name").value.trim();
+  if (!name) return showStatus("Give the preset a name", "error");
+
+  if (nameMode === "rename") {
+    activePreset().name = name;
+  } else {
+    const from = nameMode === "dup" ? activePreset() : { fields: [], values: {} };
+    const id = `p${Date.now().toString(36)}`;
+    suggestStore.presets[id] = {
+      name,
+      fields: from.fields.slice(),
+      values: Object.fromEntries(
+        Object.entries(from.values).map(([k, v]) => [k, v.slice()]),
+      ),
+    };
+    suggestStore.active = id;
+  }
+
+  const what = nameMode === "rename" ? "renamed" : "created";
+  closeNameRow();
+  saveSuggestStore();
+  renderSuggestUI();
+  showStatus(`Preset ${what}: ${name} ✓`);
+}
+
+$("btn-suggest-new").addEventListener("click", () => openNameRow("new"));
+$("btn-suggest-rename").addEventListener("click", () => openNameRow("rename"));
+$("btn-suggest-dup").addEventListener("click", () => openNameRow("dup"));
+$("btn-suggest-name-ok").addEventListener("click", commitName);
+$("btn-suggest-name-cancel").addEventListener("click", closeNameRow);
+
+$("input-suggest-name").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); commitName(); }
+  else if (e.key === "Escape") { e.preventDefault(); closeNameRow(); }
+});
+
+$("btn-suggest-del").addEventListener("click", () => {
+  const ids = Object.keys(suggestStore.presets);
+  if (ids.length < 2) return showStatus("Keep at least one preset", "error");
+  const gone = activePreset().name;
+  delete suggestStore.presets[suggestStore.active];
+  suggestStore.active = Object.keys(suggestStore.presets)[0];
+  saveSuggestStore();
+  renderSuggestUI();
+  showStatus(`Deleted preset: ${gone}`);
+});
+
+// Puts the shipped preset back — edited or deleted, it can always be recovered
+$("btn-suggest-reset").addEventListener("click", () => {
+  suggestStore.presets[LF_BUILTIN_PRESET_ID] = lfBuiltinPreset();
+  suggestStore.active = LF_BUILTIN_PRESET_ID;
+  saveSuggestStore();
+  renderSuggestUI();
+  showStatus("Built-in preset restored ✓");
+});
+
 // ── Clear all ─────────────────────────────────────────────────────────────
 $("btn-clear").addEventListener("click", async () => {
   const res = await sendToContent("clearFilters");
@@ -333,9 +513,11 @@ $("btn-clear").addEventListener("click", async () => {
 
 // ── Restore saved state ───────────────────────────────────────────────────
 chrome.storage?.local?.get(
-  ["containerTags", "payloadTags", "payloadMode", "extractFields", "extractAuto"],
+  ["containerTags", "payloadTags", "payloadMode", "extractFields", "extractAuto", LF_SUGGEST_KEY],
   (data) => {
     if (data.payloadMode) $("mode-payload").value = data.payloadMode;
+    suggestStore = lfNormalizeStore(data[LF_SUGGEST_KEY]);
+    renderSuggestUI();
     containerInput.restore(data.containerTags);
     payloadInput.restore(data.payloadTags);
     extractInput.restore(data.extractFields);

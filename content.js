@@ -1968,89 +1968,39 @@ function runEditorQuery() {
 // ── Suggestions ──────────────────────────────────────────────────────────────
 const SUGGEST_ID = "lf-suggest";
 
-// Values offered inside kubernetes.container_name="…"
-const CONTAINER_NAMES = [
-    "adaptor-account-cdd",
-    "adaptor-account-dcb-vb",
-    "adaptor-application-ccd",
-    "adaptor-application-channel",
-    "adaptor-application-ncb",
-    "adaptor-document-alfresco",
-    "adaptor-document-cmlos",
-    "adaptor-document-email",
-    "adaptor-document-signing",
-    "adaptor-document-statement",
-    "batch-account-stamp-duty-export",
-    "batch-application-geography",
-    "batch-application-notification",
-    "batch-application-occupation",
-    "batch-application-update-expired",
-    "core-account-accept",
-    "core-account-activate-flow",
-    "core-account-calc-stamp-duty",
-    "core-account-deduct-fees",
-    "core-account-setup-revolvingloan",
-    "core-account-update-kyc",
-    "core-application-appform-package",
-    "core-application-ccd-master",
-    "core-application-compliant-check",
-    "core-application-decision",
-    "core-application-dre-consume",
-    "core-application-ncb-consume",
-    "core-application-personal-info",
-    "core-application-request-consent",
-    "core-application-request-form",
-    "core-application-submit-flow",
-    "core-document-alfresco-consume",
-    "core-document-flow",
-    "core-document-follow-up",
-    "core-document-generate-report-go",
-    "core-document-mgmt",
-    "core-document-resend-contract",
-    "core-document-send-email",
-    "core-document-signing",
-    "core-document-statement-consume",
-    "core-foundation-centralize-log",
-    "core-product-master",
-    "dgl-vb",
-    "orch-account-accept",
-    "orch-application-form-mgmt",
-    "orch-application-partner",
-    "orch-document-mgmt",
-    "orch-document-partner",
-    "orch-document-upload",
-    "orch-product-management",
-    "orch-schedule",
-    "proc-gotenberg",
-];
+// Which fields and values get offered comes from the preset the popup manages
+// (see suggest-presets.js); until storage answers, the built-in one applies.
+let suggestStore = lfNormalizeStore(null);
 
-// The known list plus whatever containers actually show up in the loaded logs
-function containerNames() {
-    const set = new Set(CONTAINER_NAMES);
-    cachedPayloads.forEach((p) => {
-        const n = p?.kubernetes?.container_name;
-        if (n) set.add(String(n));
+try {
+    chrome.storage?.local?.get([LF_SUGGEST_KEY], (d) => {
+        suggestStore = lfNormalizeStore(d?.[LF_SUGGEST_KEY]);
     });
+    chrome.storage?.onChanged?.addListener((changes, area) => {
+        if (area !== "local" || !changes[LF_SUGGEST_KEY]) return;
+        suggestStore = lfNormalizeStore(changes[LF_SUGGEST_KEY].newValue);
+        if (suggestOpen()) updateSuggest(); // a list is up — re-filter it
+    });
+} catch {}
+
+const suggestFields = () => lfActivePreset(suggestStore).fields;
+
+// The preset's values for a field, plus whatever that field actually holds in
+// the loaded logs — so a new project gets useful values before anyone lists
+// them. cachedPayloads holds json_payload objects (with `kubernetes` grafted
+// on), hence the stripped prefix.
+function suggestValues(field) {
+    const set = new Set(lfActivePreset(suggestStore).values[field] || []);
+    const path = field.replace(/^json_payload\./, "");
+    for (const p of cachedPayloads) {
+        if (set.size >= 200) break;
+        const v = getNestedValue(p, path);
+        if (v == null || typeof v === "object") continue;
+        const s = String(v);
+        if (s && s.length <= 60) set.add(s);
+    }
     return [...set].sort();
 }
-
-// field → the values worth suggesting after its operator
-const VALUE_SUGGESTIONS = {
-    "kubernetes.container_name": containerNames,
-};
-
-const FIELD_SUGGESTIONS = [
-    "kubernetes",
-    "kubernetes.container_name",
-    "json_payload",
-    "json_payload.loan_app_id",
-    "json_payload.tag",
-    "json_payload.msg",
-    "json_payload.trace_id",
-    "json_payload.span_id",
-    "json_payload.wf_traceparent",
-    "json_payload.level",
-];
 
 let sugItems = [];
 let sugIndex = 0;
@@ -2073,15 +2023,18 @@ function contextAtCaret() {
 
     // value:  kubernetes.container_name="core-|
     const val = upto.match(/([A-Za-z_@][\w.@-]*)\s*(?::|=~|=)\s*(")?([^"\s()]*)$/);
-    if (val && VALUE_SUGGESTIONS[val[1]]) {
-        return {
-            word: val[3],
-            start: pos - val[3].length,
-            quoted: Boolean(val[2]),
-            items: VALUE_SUGGESTIONS[val[1]](),
-            tokenRe: /[^"\s()]/,
-            keepEmpty: true, // an empty value still lists everything
-        };
+    if (val) {
+        const items = suggestValues(val[1]);
+        // No values for this field — fall through to completing a field name
+        if (items.length)
+            return {
+                word: val[3],
+                start: pos - val[3].length,
+                quoted: Boolean(val[2]),
+                items,
+                tokenRe: /[^"\s()]/,
+                keepEmpty: true, // an empty value still lists everything
+            };
     }
 
     // field:  json_pay|      — but never inside a "quoted string"
@@ -2092,7 +2045,7 @@ function contextAtCaret() {
         word: m[0],
         start: lineStart + m.index,
         quoted: false,
-        items: FIELD_SUGGESTIONS,
+        items: suggestFields(),
         tokenRe: /[\w.@-]/,
     };
 }

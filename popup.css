@@ -67,59 +67,9 @@ body {
   min-width: 0;
 }
 
-.donate-support {
-  font-size: 10px;
-  color: #aaa;
-  margin-bottom: 2px;
-}
-
-.donate-bank {
-  font-size: 11px;
-  color: #90e0ef;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.donate-bank {
-  cursor: default;
-  position: relative;
-}
-
-.donate-bank::after {
-  content: attr(data-tip);
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  background: #44475a;
-  color: #f8f8f2;
-  font-size: 11px;
-  white-space: nowrap;
-  padding: 5px 9px;
-  border-radius: 5px;
-  border: 1px solid #6272a4;
-  box-shadow: 0 3px 10px rgba(0,0,0,.4);
-  pointer-events: none;
-  opacity: 0;
-  transform: translateY(-4px);
-  transition: opacity 0.15s, transform 0.15s;
-  z-index: 999;
-}
-
-.donate-bank:hover::after {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.donate-bank strong {
-  color: #00b4d8;
-  letter-spacing: 0.3px;
-}
-
 .donate-update {
   font-size: 10px;
-  color: #555;
-  margin-top: 2px;
+  color: #888;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -396,6 +346,16 @@ h1 {
 }
 .sub-label:first-of-type { margin-top: 6px; }
 .mt8 { margin-top: 8px; }
+
+/* Square-ish icon button, so a row of them fits next to a select */
+.btn-mini {
+  padding: 5px 7px;
+  font-size: 12px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.hidden { display: none !important; }
 
 .btn-icon-clear {
   background: none;

@@ -18,14 +18,10 @@
     <button id="btn-pin" class="btn-pin" title="Pop out as floating window">📌</button>
   </div>
 
-  <!-- Donate & GitHub -->
+  <!-- GitHub -->
   <div class="donate-bar">
-    <span class="donate-icon">☕</span>
+    <span class="donate-icon">🔗</span>
     <div class="donate-info">
-      <span class="donate-support">Support my Claude payment</span>
-      <span class="donate-bank">
-        KTB <strong>693-0-54908-8</strong> Sinlapawit
-      </span>
       <span class="donate-update">
         Checking update at
         <a href="https://github.com/kaolnwza/opensearch-log-helper" target="_blank" class="donate-gh">
@@ -84,61 +80,8 @@
     <p class="shortcut-hint">⌘↵ / Ctrl+↵ to apply</p>
   </div>
 
-  <!-- Suggestion datalist -->
-  <datalist id="container-suggestions">
-    <option value="adaptor-account-cdd">
-    <option value="adaptor-account-dcb-vb">
-    <option value="adaptor-application-ccd">
-    <option value="adaptor-application-channel">
-    <option value="adaptor-application-ncb">
-    <option value="adaptor-document-alfresco">
-    <option value="adaptor-document-cmlos">
-    <option value="adaptor-document-email">
-    <option value="adaptor-document-signing">
-    <option value="adaptor-document-statement">
-    <option value="batch-account-stamp-duty-export">
-    <option value="batch-application-geography">
-    <option value="batch-application-notification">
-    <option value="batch-application-occupation">
-    <option value="batch-application-update-expired">
-    <option value="core-account-accept">
-    <option value="core-account-activate-flow">
-    <option value="core-account-calc-stamp-duty">
-    <option value="core-account-deduct-fees">
-    <option value="core-account-setup-revolvingloan">
-    <option value="core-account-update-kyc">
-    <option value="core-application-appform-package">
-    <option value="core-application-ccd-master">
-    <option value="core-application-compliant-check">
-    <option value="core-application-decision">
-    <option value="core-application-dre-consume">
-    <option value="core-application-ncb-consume">
-    <option value="core-application-personal-info">
-    <option value="core-application-request-consent">
-    <option value="core-application-request-form">
-    <option value="core-application-submit-flow">
-    <option value="core-document-alfresco-consume">
-    <option value="core-document-flow">
-    <option value="core-document-follow-up">
-    <option value="core-document-generate-report-go">
-    <option value="core-document-mgmt">
-    <option value="core-document-resend-contract">
-    <option value="core-document-send-email">
-    <option value="core-document-signing">
-    <option value="core-document-statement-consume">
-    <option value="core-foundation-centralize-log">
-    <option value="core-product-master">
-    <option value="dgl-vb">
-    <option value="orch-account-accept">
-    <option value="orch-application-form-mgmt">
-    <option value="orch-application-partner">
-    <option value="orch-document-mgmt">
-    <option value="orch-document-partner">
-    <option value="orch-document-upload">
-    <option value="orch-product-management">
-    <option value="orch-schedule">
-    <option value="proc-gotenberg">
-  </datalist>
+  <!-- Filled from the active suggestion preset's kubernetes.container_name values -->
+  <datalist id="container-suggestions"></datalist>
 
   <div class="divider"></div>
 
@@ -220,12 +163,56 @@
 
   <div class="divider"></div>
 
+  <!-- Editor Suggestions -->
+  <div class="section">
+    <div class="section-header">
+      <label class="label">Editor Suggestions</label>
+      <button id="btn-suggest-reset" class="btn-clear-section" title="Restore the built-in preset">↺ Built-in</button>
+    </div>
+    <p class="hint">Autocomplete for the in-page query editor: field names, and the values offered after
+      <code>field:"</code>. Keep one preset per project.</p>
+
+    <div class="row">
+      <select id="suggest-preset" class="select" title="Active preset"></select>
+      <button id="btn-suggest-new" class="btn btn-secondary btn-mini" title="New preset">＋</button>
+      <button id="btn-suggest-rename" class="btn btn-secondary btn-mini" title="Rename preset">✎</button>
+      <button id="btn-suggest-dup" class="btn btn-secondary btn-mini" title="Duplicate preset">⧉</button>
+      <button id="btn-suggest-del" class="btn btn-secondary btn-mini" title="Delete preset">🗑</button>
+    </div>
+
+    <div id="suggest-name-row" class="row mt4 hidden">
+      <input id="input-suggest-name" type="text" class="input" placeholder="Preset name" autocomplete="off" />
+      <button id="btn-suggest-name-ok" class="btn btn-primary btn-mini">OK</button>
+      <button id="btn-suggest-name-cancel" class="btn btn-secondary btn-mini">✕</button>
+    </div>
+
+    <p class="sub-label">Fields</p>
+    <div id="suggest-field-box" class="tag-box">
+      <input id="input-suggest-field" type="text" class="tag-input" placeholder="e.g. json_payload.loan_app_id"
+        autocomplete="off" />
+    </div>
+
+    <div class="row mt8">
+      <span class="sub-label" style="margin:0;white-space:nowrap;">Values for</span>
+      <select id="suggest-value-field" class="select" title="Field whose values you are editing"></select>
+    </div>
+    <div id="suggest-value-box" class="tag-box mt4">
+      <input id="input-suggest-value" type="text" class="tag-input" placeholder="e.g. core-application-decision"
+        autocomplete="off" />
+    </div>
+    <p class="tag-hint">Values found in the loaded logs are offered on top of these — list here only what should show up
+      before any search has run.</p>
+  </div>
+
+  <div class="divider"></div>
+
   <div class="section">
     <button id="btn-clear" class="btn btn-danger full-width">✕ Clear All Filters</button>
   </div>
 
   <div id="status" class="status hidden"></div>
 
+  <script src="suggest-presets.js"></script>
   <script src="popup.js"></script>
 </body>
 

@@ -11,6 +11,11 @@ A Chrome extension that supercharges OpenSearch Dashboards Discover with:
     - `coalesce(field1, field2)` support
     - Level-based colour coding (ERROR=red, WARN=orange, INFO=green, DEBUG=blue)
     - Works even when `json_payload` is **not** a selected column (via fetch interceptor)
+- **Editor suggestion presets** — one autocomplete preset per project, saved in extension storage:
+  the field names the in-page query editor completes (`kubernetes.container_name`,
+  `json_payload.loan_app_id`, …) and the values offered after an operator. New / rename /
+  duplicate / delete from the popup, plus a ↺ button that restores the built-in preset.
+  Values found in the loaded logs are suggested on top of the preset's own list.
 - **Hide/Show columns** — hide raw Time / container_name / json_payload columns, showing only the overlay
 - **Pop-out window** — pin the popup as a floating window so it stays open while you click OpenSearch
 - **Lucene filter clearing** — Clear buttons strip the field from the query bar
