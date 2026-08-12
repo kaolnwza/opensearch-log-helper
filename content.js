@@ -3892,12 +3892,52 @@ function loadFormsFile(file) {
     reader.readAsText(file);
 }
 
+// The applied clause is echoed into the query editor so the filter is readable
+// next to the Lucene it runs alongside. Every line is commented: the editor
+// strips # lines before compiling, so a stray ⌘↵ cannot push JSON at the bar.
+const FORM_BLOCK_START = "# ── filter form: ";
+const FORM_BLOCK_END = "# ── end filter form ──";
+
+function stripFormBlock(src) {
+    const out = [];
+    let inside = false;
+    for (const line of src.split("\n")) {
+        if (!inside && line.startsWith(FORM_BLOCK_START)) {
+            inside = true;
+            continue;
+        }
+        if (inside) {
+            if (line === FORM_BLOCK_END) inside = false;
+            continue;
+        }
+        out.push(line);
+    }
+    return out.join("\n").replace(/^\n+/, "");
+}
+
+function showFormInEditor(name, clause) {
+    if (!editorTA) return;
+    const json = JSON.stringify(clause, null, 2)
+        .split("\n")
+        .map((l) => "# " + l)
+        .join("\n");
+    const block = `${FORM_BLOCK_START}${name} ──\n${json}\n${FORM_BLOCK_END}`;
+    const rest = stripFormBlock(editorTA.value);
+    setValue(editorTA, rest ? `${block}\n${rest}` : block);
+}
+
+function clearFormFromEditor() {
+    if (!editorTA) return;
+    setValue(editorTA, stripFormBlock(editorTA.value));
+}
+
 // Clicking the lit button is the only remove gesture — there is no separate
 // clear control. Both paths repaint from the URL rather than from a local flag.
 function applyForm(form, isActive) {
     if (isActive) {
         const res = lfClearDslFilter();
         if (!res.ok) return lfToast(res.error, 4000);
+        clearFormFromEditor();
         renderForms();
         return lfToast("Filter cleared");
     }
@@ -3907,6 +3947,7 @@ function applyForm(form, isActive) {
 
     const res = lfSetDslFilter(clean.query, form.name);
     if (!res.ok) return lfToast(res.error, 4000);
+    showFormInEditor(form.name, clean.query);
     renderForms();
 
     const notes = [`Filter · ${form.name}`];

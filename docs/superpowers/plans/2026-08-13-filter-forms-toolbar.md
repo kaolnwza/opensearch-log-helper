@@ -852,7 +852,7 @@ Wire `dsl-state.js` into the extension and draw the section. Clicking a button d
 **Files:**
 - Modify: `manifest.json`
 - Modify: `content.js` — new section before `// ── Page UI bootstrap ───` (currently content.js:3721); panel section inside `openPanel()` before the `// ── Query editor height ───` row (currently content.js:3597); `closePanel()` (content.js:3654); the `readStored` call at content.js:3642
-- Create: `test/fixtures/filter-forms.sample.json`
+- Create: `filter-forms.sample.json`
 
 **Interfaces:**
 - Consumes: `lfNormalizeFilterForms`, `lfGetDslFilterAlias` from `dsl-state.js`.
@@ -1084,7 +1084,7 @@ function closePanel() {
 
 - [ ] **Step 6: Add a fixture to load by hand**
 
-Create `test/fixtures/filter-forms.sample.json` — this is the file the manual pass picks, and it deliberately exercises the body-key strip and one skippable entry:
+Create `filter-forms.sample.json` — this is the file the manual pass picks, and it deliberately exercises the body-key strip and one skippable entry:
 
 ```json
 [
@@ -1117,9 +1117,9 @@ Create `test/fixtures/filter-forms.sample.json` — this is the file the manual 
 Reload the unpacked extension at `chrome://extensions`, then hard-reload the OpenSearch Discover tab and open the panel with the `⌗ Fields` launcher.
 
 1. The `FILTER FORMS` header, `⤑ Load` and `⟳` are there, above `QUERY EDITOR`, with the italic `No filter forms — ⤑ Load a .json` line and no search box.
-2. `⤑ Load` → pick `test/fixtures/filter-forms.sample.json`. Three buttons appear, a toast reads `Loaded 3 forms · 1 skipped`, and the meta line reads `filter-forms.sample.json · 3 forms · loaded just now`.
+2. `⤑ Load` → pick `filter-forms.sample.json`. Five buttons appear, a toast reads `Loaded 5 forms`, and the meta line reads `filter-forms.sample.json · 5 forms · loaded just now`.
 3. Click a button. The toast reads `… — not wired up yet` (Task 6 replaces this).
-4. Close and reopen the panel, then reload the page and reopen it. Both times the three buttons come back from storage.
+4. Close and reopen the panel, then reload the page and reopen it. Both times the buttons come back from storage.
 5. Switch the panel theme light ↔ dark. The section repaints with the rest of the panel and the buttons survive.
 6. Open a non-OpenSearch page. No launcher, no panel, and the devtools console is clean.
 
@@ -1131,7 +1131,7 @@ Expected: PASS — `# pass 24`, `# fail 0`
 - [ ] **Step 9: Commit**
 
 ```bash
-git add manifest.json content.js test/fixtures/filter-forms.sample.json
+git add manifest.json content.js filter-forms.sample.json
 git commit -m "feat: render loaded filter forms in the panel"
 ```
 
@@ -1237,7 +1237,7 @@ Expected: PASS — `# pass 24`, `# fail 0`
 
 - [ ] **Step 7: Verify by hand — the full spec pass**
 
-Reload the unpacked extension, hard-reload the Discover tab, open the panel, and load `test/fixtures/filter-forms.sample.json`.
+Reload the unpacked extension, hard-reload the Discover tab, open the panel, and load `filter-forms.sample.json`.
 
 1. Click `level ERROR`. A pill `LF: level ERROR` appears, the hit count changes, and the button is lit.
 2. Click `errors with a trace`. There is still exactly one `LF:` pill, now `LF: errors with a trace`, and only that button is lit.
@@ -1263,3 +1263,34 @@ git commit -m "feat: apply and clear filter forms from the panel"
 
 - Tasks 1–4 are covered by `node --test test/`. Tasks 5 and 6 are DOM and Chrome API code with no test runner in this repo; their verification is the manual pass written into the task.
 - The one thing worth reading twice is `lfWriteState`: it rewrites the whole app-state param on every apply, so a rison value the codec cannot re-emit would be silently dropped from OpenSearch's state. That is what the round-trip test in Task 1 exists to protect.
+
+---
+
+## Addendum — post-execution changes
+
+Two changes made after the six tasks landed, at the user's request:
+
+1. **The sample file moved to the repo root** as `filter-forms.sample.json`, and every entry in it is
+   now valid. Browsing to `test/fixtures/` in an OS file dialog is friction for no gain, and the
+   deliberately-broken entry made the first load of the feature report `1 skipped`, which reads as a
+   fault rather than as the demonstration it was. The `size` / `sort` entry stays, so the body-key
+   strip is still exercised on a real click.
+
+2. **The applied clause is echoed into the query editor.** `showFormInEditor(name, clause)` writes a
+   pretty-printed block above whatever is already in the editor:
+
+   ```
+   # ── filter form: level ERROR ──
+   # {
+   #   "match_phrase": {
+   #     "level": "ERROR"
+   #   }
+   # }
+   # ── end filter form ──
+   ```
+
+   Every line is commented. `stripLineComment` (content.js:1943) returns `""` for any line starting
+   with `#`, so the block cannot reach the query bar even if the user hits ⌘↵ — which matters,
+   because the block is JSON and the bar speaks Lucene. `stripFormBlock` removes an existing block
+   before writing a new one and on toggle-off, so selecting forms repeatedly never stacks blocks and
+   never overwrites the user's own query text.

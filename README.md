@@ -17,8 +17,10 @@ A Chrome extension that supercharges OpenSearch Dashboards Discover with:
   duplicate / delete from the popup, plus a ↺ button that restores the built-in preset.
   Values found in the loaded logs are suggested on top of the preset's own list.
 - **Filter forms** — load a `.json` file of named Query DSL clauses in the panel and apply any of
-  them as a filter with one click. Click the lit button again to remove it. Filters you made by hand
-  in OpenSearch are never touched.
+  them as a filter with one click. Click the lit button again to remove it. The applied clause is
+  echoed into the query editor as commented lines, so it is readable next to your Lucene without
+  ever being run. Filters you made by hand in OpenSearch are never touched.
+  See `filter-forms.sample.json` for the file format.
 - **Hide/Show columns** — hide raw Time / container_name / json_payload columns, showing only the overlay
 - **Pop-out window** — pin the popup as a floating window so it stays open while you click OpenSearch
 - **Lucene filter clearing** — Clear buttons strip the field from the query bar

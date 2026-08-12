@@ -12,12 +12,30 @@
     }
   },
   {
+    "name": "not DEBUG",
+    "dsl": {
+      "bool": {
+        "must_not": [{ "match_phrase": { "level": "DEBUG" } }]
+      }
+    }
+  },
+  {
+    "name": "last hour, one container",
+    "dsl": {
+      "bool": {
+        "must": [
+          { "match_phrase": { "kubernetes.container_name": "api" } },
+          { "range": { "@timestamp": { "gte": "now-1h" } } }
+        ]
+      }
+    }
+  },
+  {
     "name": "pasted search body",
     "dsl": {
       "size": 500,
       "sort": [{ "@timestamp": "desc" }],
       "query": { "match_phrase": { "level": "INFO" } }
     }
-  },
-  { "name": "broken — no dsl" }
+  }
 ]
