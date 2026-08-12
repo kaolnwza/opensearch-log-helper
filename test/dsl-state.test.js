@@ -97,3 +97,48 @@ test("rison rejects malformed input", () => {
     assert.throws(() => lfRisonDecode("(a:1)junk"), /rison/);
     assert.throws(() => lfRisonDecode("!z"), /rison/);
 });
+
+const DISCOVER_HREF =
+    "http://osd.local/app/data-explorer/discover#/?" +
+    "_g=(time:(from:now-15m,to:now))&" +
+    "_q=(filters:!(),query:(language:lucene,query:''))&" +
+    "_a=(metadata:(indexPattern:'idx-1',view:discover))";
+
+test("finds the param carrying filters", () => {
+    const { lfFindFilterParam } = load(DISCOVER_HREF);
+    const found = lfFindFilterParam(DISCOVER_HREF);
+    assert.strictEqual(found.name, "_q");
+    assert.strictEqual(found.head, "/");
+    assert.deepStrictEqual(plain(found.state.filters), []);
+});
+
+test("falls back to _a when _q carries no filters", () => {
+    const href =
+        "http://osd.local/app/discover#/?_q=(query:(language:lucene,query:''))" +
+        "&_a=(filters:!(),metadata:(indexPattern:'idx-9'))";
+    const { lfFindFilterParam } = load(href);
+    assert.strictEqual(lfFindFilterParam(href).name, "_a");
+});
+
+test("returns null when the URL has no app state", () => {
+    const href = "http://example.com/app/other";
+    const { lfFindFilterParam } = load(href);
+    assert.strictEqual(lfFindFilterParam(href), null);
+});
+
+test("reports an unreadable param instead of guessing", () => {
+    const href = "http://osd.local/app/discover#/?_q=(filters:!(";
+    const { lfFindFilterParam } = load(href);
+    assert.match(lfFindFilterParam(href).error, /Could not read _q/);
+});
+
+test("writing a state leaves the other params untouched", () => {
+    const ctx = load(DISCOVER_HREF);
+    const found = ctx.lfFindFilterParam(DISCOVER_HREF);
+    found.state.filters = [{ meta: { alias: "x" } }];
+    ctx.lfWriteState(found, found.state);
+    assert.match(ctx.location.href, /_g=\(time:\(from:now-15m,to:now\)\)/);
+    assert.match(ctx.location.href, /_a=\(metadata:\(indexPattern:'idx-1',view:discover\)\)/);
+    assert.match(ctx.location.href, /_q=\(filters:!\(\(meta:\(alias:x\)\)\)/);
+    assert.match(ctx.location.href, /#\/\?/); // the pre-query part of the hash survives
+});
