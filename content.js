@@ -3705,6 +3705,12 @@ function openPanel() {
         renderChips();
         renderList();
         renderForms();
+        if (!filterForms.forms.length)
+            seedFormsFromBundle().then((seeded) => {
+                if (!seeded) return;
+                filterForms = seeded;
+                renderForms();
+            });
     });
 }
 
@@ -3812,6 +3818,25 @@ function normalizeStoredForms(raw) {
     };
 }
 
+// First run has nothing stored, and an empty panel section teaches nobody what
+// the file should look like — so the bundled sample is seeded once. Loading a
+// file of your own overwrites it and it is never re-seeded after that.
+const FORMS_BUNDLED = "filter-forms.sample.json";
+
+async function seedFormsFromBundle() {
+    try {
+        const url = chrome.runtime?.getURL?.(FORMS_BUNDLED);
+        if (!url) return null;
+        const { forms } = lfNormalizeFilterForms(await (await fetch(url)).json());
+        if (!forms.length) return null;
+        const store = { file: FORMS_BUNDLED, loaded: Date.now(), forms };
+        chrome.storage?.local?.set({ [FORMS_KEY]: store });
+        return store;
+    } catch {
+        return null; // no sample is not a failure worth a toast
+    }
+}
+
 function formsAge(ms) {
     if (!ms) return "just now";
     const mins = Math.round((Date.now() - ms) / 60000);
@@ -3892,52 +3917,16 @@ function loadFormsFile(file) {
     reader.readAsText(file);
 }
 
-// The applied clause is echoed into the query editor so the filter is readable
-// next to the Lucene it runs alongside. Every line is commented: the editor
-// strips # lines before compiling, so a stray ⌘↵ cannot push JSON at the bar.
-const FORM_BLOCK_START = "# ── filter form: ";
-const FORM_BLOCK_END = "# ── end filter form ──";
-
-function stripFormBlock(src) {
-    const out = [];
-    let inside = false;
-    for (const line of src.split("\n")) {
-        if (!inside && line.startsWith(FORM_BLOCK_START)) {
-            inside = true;
-            continue;
-        }
-        if (inside) {
-            if (line === FORM_BLOCK_END) inside = false;
-            continue;
-        }
-        out.push(line);
-    }
-    return out.join("\n").replace(/^\n+/, "");
-}
-
-function showFormInEditor(name, clause) {
-    if (!editorTA) return;
-    const json = JSON.stringify(clause, null, 2)
-        .split("\n")
-        .map((l) => "# " + l)
-        .join("\n");
-    const block = `${FORM_BLOCK_START}${name} ──\n${json}\n${FORM_BLOCK_END}`;
-    const rest = stripFormBlock(editorTA.value);
-    setValue(editorTA, rest ? `${block}\n${rest}` : block);
-}
-
-function clearFormFromEditor() {
-    if (!editorTA) return;
-    setValue(editorTA, stripFormBlock(editorTA.value));
-}
-
+// The query editor is deliberately left alone: it compiles to Lucene, a DSL
+// clause is not Lucene, and the pill plus the lit button already say which
+// filter is on.
+//
 // Clicking the lit button is the only remove gesture — there is no separate
 // clear control. Both paths repaint from the URL rather than from a local flag.
 function applyForm(form, isActive) {
     if (isActive) {
         const res = lfClearDslFilter();
         if (!res.ok) return lfToast(res.error, 4000);
-        clearFormFromEditor();
         renderForms();
         return lfToast("Filter cleared");
     }
@@ -3947,7 +3936,6 @@ function applyForm(form, isActive) {
 
     const res = lfSetDslFilter(clean.query, form.name);
     if (!res.ok) return lfToast(res.error, 4000);
-    showFormInEditor(form.name, clean.query);
     renderForms();
 
     const notes = [`Filter · ${form.name}`];

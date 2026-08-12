@@ -1294,3 +1294,11 @@ Two changes made after the six tasks landed, at the user's request:
    because the block is JSON and the bar speaks Lucene. `stripFormBlock` removes an existing block
    before writing a new one and on toggle-off, so selecting forms repeatedly never stacks blocks and
    never overwrites the user's own query text.
+
+3. **The editor echo from (2) was removed again, and the bundled sample is auto-loaded.** The echo
+   could only ever be commented text — the editor compiles to Lucene and a DSL clause is not Lucene —
+   so it duplicated what the pill and the lit button already say without being actionable. In its
+   place, `seedFormsFromBundle()` fetches `filter-forms.sample.json` through
+   `chrome.runtime.getURL` when the store is empty, which needs the file listed in
+   `web_accessible_resources` for a content script to read it. Seeding happens only while the store
+   is empty, so loading a file of your own is never undone.
