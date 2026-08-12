@@ -3764,11 +3764,17 @@ function mountLauncher() {
 // Keep the panel in step with edits made from the popup
 try {
     chrome.storage?.onChanged?.addListener((changes, area) => {
-        if (area !== "local" || !changes.extractFields) return;
+        if (area !== "local") return;
         if (!document.getElementById(PANEL_ID)) return;
-        panelFields = changes.extractFields.newValue || [];
-        renderChips();
-        renderList();
+        if (changes.extractFields) {
+            panelFields = changes.extractFields.newValue || [];
+            renderChips();
+            renderList();
+        }
+        if (changes[FORMS_KEY]) {
+            filterForms = normalizeStoredForms(changes[FORMS_KEY].newValue);
+            renderForms();
+        }
     });
 } catch {}
 
@@ -3776,6 +3782,13 @@ try {
 window.addEventListener("message", (e) => {
     if (e.source !== window || e.data?.type !== "__LF_HITS__") return;
     if (document.getElementById(PANEL_ID)) setTimeout(renderList, 450);
+});
+
+// Filters can also change from OpenSearch's own pill UI, and applying one of
+// ours is itself a navigation — either way the lit button is re-derived here.
+window.addEventListener("message", (e) => {
+    if (e.source !== window || e.data?.type !== "__LF_NAV__") return;
+    if (document.getElementById(PANEL_ID)) setTimeout(renderForms, 100);
 });
 
 // ── Filter forms ──────────────────────────────────────────────────────────────
@@ -3879,8 +3892,28 @@ function loadFormsFile(file) {
     reader.readAsText(file);
 }
 
-function applyForm(form) {
-    lfToast(`${form.name} — not wired up yet`);
+// Clicking the lit button is the only remove gesture — there is no separate
+// clear control. Both paths repaint from the URL rather than from a local flag.
+function applyForm(form, isActive) {
+    if (isActive) {
+        const res = lfClearDslFilter();
+        if (!res.ok) return lfToast(res.error, 4000);
+        renderForms();
+        return lfToast("Filter cleared");
+    }
+
+    const clean = lfStripBodyKeys(form.dsl);
+    if (!clean.ok) return lfToast(`${form.name}: ${clean.error}`, 4000);
+
+    const res = lfSetDslFilter(clean.query, form.name);
+    if (!res.ok) return lfToast(res.error, 4000);
+    renderForms();
+
+    const notes = [`Filter · ${form.name}`];
+    if (clean.dropped.length) notes.push(`dropped ${clean.dropped.join(", ")}`);
+    if (!res.indexResolved)
+        notes.push("index pattern unresolved — the pill may not render");
+    lfToast(notes.join(" · "), notes.length > 1 ? 4500 : 2200);
 }
 
 // ── Page UI bootstrap ─────────────────────────────────────────────────────────
