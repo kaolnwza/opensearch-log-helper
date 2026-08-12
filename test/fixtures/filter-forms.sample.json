@@ -1,0 +1,23 @@
+[
+  {
+    "name": "level ERROR",
+    "dsl": { "match_phrase": { "level": "ERROR" } }
+  },
+  {
+    "name": "errors with a trace",
+    "dsl": {
+      "bool": {
+        "must": [{ "match_phrase": { "level": "ERROR" } }, { "exists": { "field": "trace_id" } }]
+      }
+    }
+  },
+  {
+    "name": "pasted search body",
+    "dsl": {
+      "size": 500,
+      "sort": [{ "@timestamp": "desc" }],
+      "query": { "match_phrase": { "level": "INFO" } }
+    }
+  },
+  { "name": "broken — no dsl" }
+]

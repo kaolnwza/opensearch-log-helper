@@ -19,7 +19,7 @@
     {
       "matches": ["<all_urls>"],
       "include_globs": ["*/app/*"],
-      "js": ["suggest-presets.js", "content.js"],
+      "js": ["dsl-state.js", "suggest-presets.js", "content.js"],
       "run_at": "document_idle"
     }
   ]

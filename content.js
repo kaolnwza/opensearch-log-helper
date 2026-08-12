@@ -3594,6 +3594,61 @@ function openPanel() {
     row2.appendChild(autoLbl);
     body.appendChild(row2);
 
+    // ── Filter forms ─────────────────────────────────────────────────────────
+    const fRow = el(
+        "div",
+        `display:flex;gap:6px;align-items:center;border-top:1px solid ${th.sep};padding-top:8px;`,
+    );
+    fRow.appendChild(
+        el("span", `color:${th.hdr};font-size:10px;letter-spacing:0.4px;flex:1;`, "FILTER FORMS"),
+    );
+
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = ".json,application/json";
+    fileInput.style.display = "none";
+    fileInput.addEventListener("change", () => {
+        const f = fileInput.files?.[0];
+        // Re-picking the same file must still fire change
+        fileInput.value = "";
+        if (f) loadFormsFile(f);
+    });
+
+    const loadBtn = panelButton("⤑ Load");
+    loadBtn.style.flex = "0 0 auto";
+    loadBtn.title = "Load a .json file of named DSL filters";
+    loadBtn.addEventListener("click", () => fileInput.click());
+    fRow.appendChild(loadBtn);
+
+    const fRefresh = el("span", `cursor:pointer;color:${th.toggle};`, "⟳");
+    fRefresh.title = "Re-read the saved forms and re-sync the active one";
+    fRefresh.addEventListener("click", () =>
+        readStored([FORMS_KEY]).then((d) => {
+            filterForms = normalizeStoredForms(d[FORMS_KEY]);
+            renderForms();
+        }),
+    );
+    fRow.appendChild(fRefresh);
+    body.appendChild(fRow);
+    body.appendChild(fileInput);
+
+    formsMeta = el("div", `color:${th.hdr};font-size:10px;`);
+    body.appendChild(formsMeta);
+
+    formsSearchInput = document.createElement("input");
+    formsSearchInput.placeholder = "search forms…";
+    formsSearchInput.value = formsSearch;
+    formsSearchInput.style.cssText = customInput.style.cssText;
+    formsSearchInput.addEventListener("input", () => {
+        formsSearch = formsSearchInput.value;
+        renderForms();
+    });
+    formsSearchInput.addEventListener("keydown", (e) => e.stopPropagation());
+    body.appendChild(formsSearchInput);
+
+    formsBox = el("div", "display:flex;flex-wrap:wrap;gap:5px;");
+    body.appendChild(formsBox);
+
     // ── Query editor height ──────────────────────────────────────────────────
     const qRow = el(
         "div",
@@ -3639,15 +3694,17 @@ function openPanel() {
     document.body.appendChild(panel);
 
     // Fill from whatever the popup last saved, then paint
-    readStored(["extractFields", "extractAuto"]).then((d) => {
+    readStored(["extractFields", "extractAuto", FORMS_KEY]).then((d) => {
         panelFields = activeFields.length
             ? activeFields.slice()
             : d.extractFields || [];
         autoChk.checked = Boolean(d.extractAuto);
         panelColsHidden = Boolean(document.getElementById(HIDE_STYLE_ID));
         hideBtn.textContent = panelColsHidden ? "👁 Show Cols" : "🙈 Hide Cols";
+        filterForms = normalizeStoredForms(d[FORMS_KEY]);
         renderChips();
         renderList();
+        renderForms();
     });
 }
 
@@ -3655,6 +3712,9 @@ function closePanel() {
     document.getElementById(PANEL_ID)?.remove();
     chipsBox = null;
     listBox = null;
+    formsBox = null;
+    formsMeta = null;
+    formsSearchInput = null;
 }
 
 function togglePanel() {
@@ -3717,6 +3777,111 @@ window.addEventListener("message", (e) => {
     if (e.source !== window || e.data?.type !== "__LF_HITS__") return;
     if (document.getElementById(PANEL_ID)) setTimeout(renderList, 450);
 });
+
+// ── Filter forms ──────────────────────────────────────────────────────────────
+// A .json file of named Query DSL clauses, one button per name. The active form
+// is deliberately not stored: the pill in the URL is the real state, so a
+// reloaded or shared link lights the right button on its own.
+const FORMS_KEY = "filterForms";
+
+let filterForms = { file: "", loaded: 0, forms: [] };
+let formsSearch = "";
+let formsBox = null;
+let formsMeta = null;
+let formsSearchInput = null;
+
+function normalizeStoredForms(raw) {
+    const { forms } = lfNormalizeFilterForms(raw?.forms || []);
+    return {
+        file: String(raw?.file || ""),
+        loaded: Number(raw?.loaded) || 0,
+        forms,
+    };
+}
+
+function formsAge(ms) {
+    if (!ms) return "just now";
+    const mins = Math.round((Date.now() - ms) / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.round(mins / 60);
+    return hrs < 24 ? `${hrs}h ago` : `${Math.round(hrs / 24)}d ago`;
+}
+
+function renderForms() {
+    if (!formsBox) return;
+    const th = T();
+    const active = lfGetDslFilterAlias();
+    const forms = filterForms.forms;
+
+    if (formsMeta)
+        formsMeta.textContent = forms.length
+            ? `${filterForms.file || "forms"} · ${forms.length} forms · loaded ${formsAge(filterForms.loaded)}`
+            : "";
+    // The search box only earns its space once the list stops fitting at a glance
+    if (formsSearchInput)
+        formsSearchInput.style.display = forms.length > 8 ? "" : "none";
+
+    formsBox.textContent = "";
+    if (!forms.length) {
+        formsBox.appendChild(
+            el("span", `color:${th.empty};font-style:italic;`, "No filter forms — ⤑ Load a .json"),
+        );
+        return;
+    }
+
+    const q = formsSearch.trim().toLowerCase();
+    const shown = q ? forms.filter((f) => f.name.toLowerCase().includes(q)) : forms;
+    if (!shown.length) {
+        formsBox.appendChild(
+            el("span", `color:${th.empty};font-style:italic;`, "No form matches"),
+        );
+        return;
+    }
+
+    shown.forEach((form) => {
+        const on = form.name === active;
+        const b = panelButton(
+            form.name.length > 22 ? form.name.slice(0, 21) + "…" : form.name,
+            on,
+        );
+        b.style.flex = "0 0 auto";
+        b.title = form.name;
+        b.addEventListener("click", () => applyForm(form, on));
+        formsBox.appendChild(b);
+    });
+}
+
+function loadFormsFile(file) {
+    const reader = new FileReader();
+    reader.onerror = () => lfToast("Could not read that file");
+    reader.onload = () => {
+        let raw;
+        try {
+            raw = JSON.parse(String(reader.result));
+        } catch (e) {
+            return lfToast(e.message, 4000);
+        }
+        const { forms, skipped } = lfNormalizeFilterForms(raw);
+        if (!forms.length) return lfToast("No valid filter forms in that file", 3500);
+
+        filterForms = { file: file.name, loaded: Date.now(), forms };
+        try {
+            chrome.storage?.local?.set({ [FORMS_KEY]: filterForms });
+        } catch {}
+        renderForms();
+        lfToast(
+            skipped
+                ? `Loaded ${forms.length} forms · ${skipped} skipped`
+                : `Loaded ${forms.length} forms`,
+        );
+    };
+    reader.readAsText(file);
+}
+
+function applyForm(form) {
+    lfToast(`${form.name} — not wired up yet`);
+}
 
 // ── Page UI bootstrap ─────────────────────────────────────────────────────────
 // The content script can still land on a non-OpenSearch page, so every piece of
