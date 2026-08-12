@@ -281,3 +281,80 @@ function lfStripBodyKeys(dsl) {
         return { ok: false, dropped, error: "not a query clause object" };
     return { ok: true, query, dropped };
 }
+
+// ── Our filter pill ───────────────────────────────────────────────────────────
+// meta.alias does three jobs: the pill's visible label, the marker that says a
+// pill is ours to replace, and the form name the panel matches to light a
+// button after a reload. Filters the user made by hand carry no such alias and
+// are never touched.
+const LF_ALIAS_PREFIX = "LF: ";
+
+function lfIsOurs(f) {
+    return typeof f?.meta?.alias === "string" && f.meta.alias.startsWith(LF_ALIAS_PREFIX);
+}
+
+// An unresolvable index pattern is not fatal — the pill is still written, and
+// the caller warns that it may not render.
+function lfIndexPatternId(found) {
+    for (const f of found.state.filters || []) if (f?.meta?.index) return f.meta.index;
+    for (const [k, v] of found.pairs) {
+        if (k !== "_q" && k !== "_a") continue;
+        try {
+            const st = lfRisonDecode(decodeURIComponent(v));
+            if (st?.metadata?.indexPattern) return st.metadata.indexPattern;
+        } catch {
+            // A param we cannot read simply has no index pattern to offer
+        }
+    }
+    return null;
+}
+
+function lfBuildPill(clause, name, index) {
+    const meta = {
+        alias: LF_ALIAS_PREFIX + name,
+        disabled: false,
+        key: "query",
+        negate: false,
+        type: "custom",
+        value: JSON.stringify(clause),
+    };
+    if (index) meta.index = index;
+    return { $state: { store: "appState" }, meta, query: clause };
+}
+
+// Everything below reads the URL fresh: the user may have added or removed
+// filters by hand since the panel was drawn.
+function lfWithFilterParam(fn) {
+    const found = lfFindFilterParam(location.href);
+    if (!found)
+        return {
+            ok: false,
+            error: "Filter state not found in the URL — is this Discover?",
+        };
+    if (found.error) return { ok: false, error: found.error };
+    return fn(found, Array.isArray(found.state.filters) ? found.state.filters : []);
+}
+
+function lfSetDslFilter(clause, name) {
+    return lfWithFilterParam((found, filters) => {
+        const index = lfIndexPatternId(found);
+        const kept = filters.filter((f) => !lfIsOurs(f));
+        kept.push(lfBuildPill(clause, name, index));
+        lfWriteState(found, { ...found.state, filters: kept });
+        return { ok: true, indexResolved: Boolean(index) };
+    });
+}
+
+function lfClearDslFilter() {
+    return lfWithFilterParam((found, filters) => {
+        lfWriteState(found, { ...found.state, filters: filters.filter((f) => !lfIsOurs(f)) });
+        return { ok: true };
+    });
+}
+
+function lfGetDslFilterAlias() {
+    const found = lfFindFilterParam(location.href);
+    if (!found || found.error) return null;
+    const ours = (found.state.filters || []).find(lfIsOurs);
+    return ours ? ours.meta.alias.slice(LF_ALIAS_PREFIX.length) : null;
+}

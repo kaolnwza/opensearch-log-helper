@@ -206,3 +206,88 @@ test("rejects anything that is not a clause object", () => {
     assert.strictEqual(lfStripBodyKeys({ size: 10 }).ok, false);
     assert.match(lfStripBodyKeys({}).error, /not a query clause object/);
 });
+
+const WITH_FOREIGN =
+    "http://osd.local/app/data-explorer/discover#/?" +
+    "_q=(filters:!((meta:(alias:!n,index:'idx-1',key:level,negate:!f)," +
+    "query:(match_phrase:(level:ERROR)))),query:(language:lucene,query:''))";
+
+test("applying writes one owned pill and keeps foreign filters", () => {
+    const ctx = load(WITH_FOREIGN);
+    const res = ctx.lfSetDslFilter({ term: { customer_id: "cus1" } }, "cus1");
+    assert.deepStrictEqual(plain(res), { ok: true, indexResolved: true });
+
+    const state = ctx.lfFindFilterParam(ctx.location.href).state;
+    assert.strictEqual(state.filters.length, 2);
+    assert.strictEqual(state.filters[0].query.match_phrase.level, "ERROR"); // untouched
+    const ours = state.filters[1];
+    assert.strictEqual(ours.meta.alias, "LF: cus1");
+    assert.strictEqual(ours.meta.index, "idx-1"); // borrowed from the foreign filter
+    assert.strictEqual(ours.meta.type, "custom");
+    assert.strictEqual(ours.meta.disabled, false);
+    assert.strictEqual(ours.meta.negate, false);
+    assert.strictEqual(ours.meta.value, '{"term":{"customer_id":"cus1"}}');
+    assert.deepStrictEqual(plain(ours.$state), { store: "appState" });
+    assert.deepStrictEqual(plain(ours.query), { term: { customer_id: "cus1" } });
+});
+
+test("applying twice replaces our pill rather than stacking", () => {
+    const ctx = load(WITH_FOREIGN);
+    ctx.lfSetDslFilter({ term: { a: 1 } }, "one");
+    ctx.lfSetDslFilter({ term: { b: 2 } }, "two");
+    const state = ctx.lfFindFilterParam(ctx.location.href).state;
+    assert.strictEqual(state.filters.length, 2);
+    assert.strictEqual(ctx.lfGetDslFilterAlias(), "two");
+});
+
+test("the active form name comes back from the URL", () => {
+    const ctx = load(WITH_FOREIGN);
+    assert.strictEqual(ctx.lfGetDslFilterAlias(), null);
+    ctx.lfSetDslFilter({ term: { a: 1 } }, "cus1");
+    assert.strictEqual(ctx.lfGetDslFilterAlias(), "cus1");
+});
+
+test("clearing removes only our pill", () => {
+    const ctx = load(WITH_FOREIGN);
+    ctx.lfSetDslFilter({ term: { a: 1 } }, "cus1");
+    assert.deepStrictEqual(plain(ctx.lfClearDslFilter()), { ok: true });
+    const state = ctx.lfFindFilterParam(ctx.location.href).state;
+    assert.strictEqual(state.filters.length, 1);
+    assert.strictEqual(state.filters[0].query.match_phrase.level, "ERROR");
+    assert.strictEqual(ctx.lfGetDslFilterAlias(), null);
+});
+
+test("falls back to metadata.indexPattern, then reports it unresolved", () => {
+    const withMeta =
+        "http://osd.local/app/discover#/?_q=(filters:!(),query:(language:lucene,query:''))" +
+        "&_a=(metadata:(indexPattern:'idx-7'))";
+    const ctx = load(withMeta);
+    assert.deepStrictEqual(plain(ctx.lfSetDslFilter({ term: { a: 1 } }, "x")), {
+        ok: true,
+        indexResolved: true,
+    });
+    assert.strictEqual(ctx.lfFindFilterParam(ctx.location.href).state.filters[0].meta.index, "idx-7");
+
+    const bare = load("http://osd.local/app/discover#/?_q=(filters:!())");
+    const res = bare.lfSetDslFilter({ term: { a: 1 } }, "x");
+    assert.deepStrictEqual(plain(res), { ok: true, indexResolved: false });
+    assert.strictEqual(bare.lfFindFilterParam(bare.location.href).state.filters[0].meta.index, undefined);
+});
+
+test("refuses to write when there is no app state, and says why", () => {
+    const ctx = load("http://example.com/app/other");
+    assert.deepStrictEqual(plain(ctx.lfSetDslFilter({ term: { a: 1 } }, "x")), {
+        ok: false,
+        error: "Filter state not found in the URL — is this Discover?",
+    });
+    assert.strictEqual(ctx.location.href, "http://example.com/app/other");
+});
+
+test("refuses to write over a param it could not decode", () => {
+    const href = "http://osd.local/app/discover#/?_q=(filters:!(";
+    const ctx = load(href);
+    const res = ctx.lfSetDslFilter({ term: { a: 1 } }, "x");
+    assert.strictEqual(res.ok, false);
+    assert.match(res.error, /Could not read _q/);
+    assert.strictEqual(ctx.location.href, href);
+});
