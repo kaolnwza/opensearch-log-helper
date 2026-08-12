@@ -200,3 +200,84 @@ function lfWriteState(found, state) {
     location.hash =
         found.head + "?" + pairs.map(([k, v]) => `${k}=${v}`).join("&");
 }
+
+// ── Filter form store ─────────────────────────────────────────────────────────
+// A hand-written file is as likely to be a name → clause map as an array, and
+// people paste whole search bodies out of their dev console, so both are taken
+// and reduced to one shape here. Every read of the store goes through this.
+
+function lfNormalizeFilterForms(raw) {
+    const entries = [];
+    let skipped = 0;
+
+    const push = (name, dsl) => {
+        if (typeof name !== "string" || !name.trim()) return void skipped++;
+        if (!dsl || typeof dsl !== "object" || Array.isArray(dsl))
+            return void skipped++;
+        entries.push({ name: name.trim(), dsl });
+    };
+
+    const list = Array.isArray(raw)
+        ? raw
+        : Array.isArray(raw?.forms)
+          ? raw.forms
+          : null;
+
+    if (list) {
+        for (const e of list) {
+            if (!e || typeof e !== "object" || Array.isArray(e)) skipped++;
+            else push(e.name, e.dsl);
+        }
+    } else if (raw && typeof raw === "object") {
+        for (const [k, v] of Object.entries(raw)) push(k, v);
+    } else {
+        return { forms: [], skipped: 0 };
+    }
+
+    // Names are the button labels *and* the pill alias we match on, so two
+    // forms may not share one.
+    const used = new Set();
+    const forms = entries.map(({ name, dsl }) => {
+        let n = name;
+        for (let i = 2; used.has(n); i++) n = `${name} (${i})`;
+        used.add(n);
+        return { name: n, dsl };
+    });
+    return { forms, skipped };
+}
+
+// Search-body keys alongside a query crash OpenSearch's filter label builder
+// with "input.charAt is not a function". They are dropped, never silently —
+// the caller names them in a toast.
+const LF_BODY_KEYS = [
+    "size",
+    "from",
+    "sort",
+    "_source",
+    "aggs",
+    "aggregations",
+    "track_total_hits",
+    "highlight",
+    "timeout",
+    "search_after",
+];
+
+function lfStripBodyKeys(dsl) {
+    const bad = { ok: false, dropped: [], error: "not a query clause object" };
+    if (!dsl || typeof dsl !== "object" || Array.isArray(dsl)) return bad;
+
+    const inner =
+        dsl.query && typeof dsl.query === "object" && !Array.isArray(dsl.query)
+            ? dsl.query
+            : dsl;
+
+    const query = {};
+    const dropped = [];
+    for (const [k, v] of Object.entries(inner)) {
+        if (LF_BODY_KEYS.includes(k)) dropped.push(k);
+        else query[k] = v;
+    }
+    if (!Object.keys(query).length)
+        return { ok: false, dropped, error: "not a query clause object" };
+    return { ok: true, query, dropped };
+}

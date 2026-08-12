@@ -142,3 +142,67 @@ test("writing a state leaves the other params untouched", () => {
     assert.match(ctx.location.href, /_q=\(filters:!\(\(meta:\(alias:x\)\)\)/);
     assert.match(ctx.location.href, /#\/\?/); // the pre-query part of the hash survives
 });
+
+test("normalises the three accepted file shapes to the same forms", () => {
+    const { lfNormalizeFilterForms } = load();
+    const dsl = { term: { customer_id: "cus1" } };
+    const expected = [{ name: "cus1", dsl }];
+
+    assert.deepStrictEqual(plain(lfNormalizeFilterForms([{ name: "cus1", dsl }]).forms), expected);
+    assert.deepStrictEqual(plain(lfNormalizeFilterForms({ forms: [{ name: "cus1", dsl }] }).forms), expected);
+    assert.deepStrictEqual(plain(lfNormalizeFilterForms({ cus1: dsl }).forms), expected);
+});
+
+test("skips invalid entries and counts them", () => {
+    const { lfNormalizeFilterForms } = load();
+    const res = lfNormalizeFilterForms([
+        { name: "ok", dsl: { match_all: {} } },
+        { name: "", dsl: { match_all: {} } },
+        { name: "no dsl" },
+        { name: "array dsl", dsl: [] },
+        "nonsense",
+    ]);
+    assert.deepStrictEqual(plain(res.forms.map((f) => f.name)), ["ok"]);
+    assert.strictEqual(res.skipped, 4);
+});
+
+test("suffixes duplicate names", () => {
+    const { lfNormalizeFilterForms } = load();
+    const d = { match_all: {} };
+    const res = lfNormalizeFilterForms([
+        { name: "dup", dsl: d },
+        { name: "dup", dsl: d },
+        { name: "dup", dsl: d },
+    ]);
+    assert.deepStrictEqual(plain(res.forms.map((f) => f.name)), ["dup", "dup (2)", "dup (3)"]);
+});
+
+test("normalising junk yields an empty list, not a throw", () => {
+    const { lfNormalizeFilterForms } = load();
+    assert.deepStrictEqual(plain(lfNormalizeFilterForms(null)), { forms: [], skipped: 0 });
+    assert.deepStrictEqual(plain(lfNormalizeFilterForms("nope")), { forms: [], skipped: 0 });
+});
+
+test("strips search-body keys and names them", () => {
+    const { lfStripBodyKeys } = load();
+    const res = lfStripBodyKeys({
+        size: 500,
+        sort: [{ "@timestamp": "desc" }],
+        bool: { must: [] },
+    });
+    assert.deepStrictEqual(plain(res), { ok: true, query: { bool: { must: [] } }, dropped: ["size", "sort"] });
+});
+
+test("unwraps a top-level query key", () => {
+    const { lfStripBodyKeys } = load();
+    assert.deepStrictEqual(plain(lfStripBodyKeys({ query: { term: { a: 1 } } }).query), { term: { a: 1 } });
+});
+
+test("rejects anything that is not a clause object", () => {
+    const { lfStripBodyKeys } = load();
+    assert.strictEqual(lfStripBodyKeys(null).ok, false);
+    assert.strictEqual(lfStripBodyKeys([]).ok, false);
+    assert.strictEqual(lfStripBodyKeys({}).ok, false);
+    assert.strictEqual(lfStripBodyKeys({ size: 10 }).ok, false);
+    assert.match(lfStripBodyKeys({}).error, /not a query clause object/);
+});
