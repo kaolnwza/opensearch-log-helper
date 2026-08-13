@@ -291,3 +291,17 @@ test("refuses to write over a param it could not decode", () => {
     assert.match(res.error, /Could not read _q/);
     assert.strictEqual(ctx.location.href, href);
 });
+
+test("sweeps the raw hash for an index pattern the structured lookup misses", () => {
+    // Some builds nest the id under discover state rather than metadata
+    const href =
+        "http://osd.local/app/data-explorer/discover#?_q=(filters:!())" +
+        "&_a=(discover:(savedSearch:s1,indexPattern:'nested-99'))";
+    const ctx = load(href);
+    const res = ctx.lfSetDslFilter({ term: { a: 1 } }, "x");
+    assert.deepStrictEqual(plain(res), { ok: true, indexResolved: true });
+    assert.strictEqual(
+        ctx.lfFindFilterParam(ctx.location.href).state.filters[0].meta.index,
+        "nested-99",
+    );
+});

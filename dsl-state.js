@@ -306,7 +306,12 @@ function lfIndexPatternId(found) {
             // A param we cannot read simply has no index pattern to offer
         }
     }
-    return null;
+    // Versions differ on where they park the id — data-explorer nests it under
+    // discover state, classic under metadata. A pill with no meta.index is
+    // dropped by the filter bar without a word, so it is worth one last sweep
+    // of the raw hash for any indexPattern at all.
+    const m = /indexPattern[:=]'?([\w.-]+)'?/.exec(String(found.pairs.map(([, v]) => v).join("&")));
+    return m ? m[1] : null;
 }
 
 function lfBuildPill(clause, name, index) {
