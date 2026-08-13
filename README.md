@@ -23,21 +23,33 @@ A Chrome extension that supercharges OpenSearch Dashboards Discover with:
   first run, both as a working set and as the file format to copy:
 
   ```json
-  {
-    "dns": ["*"],
-    "forms": [
-      { "name": "level ERROR", "dsl": { "match_phrase": { "level": "ERROR" } } },
-      { "name": "prod only", "dns": ["logs.prod.example"], "dsl": { "term": { "env": "prod" } } },
-      { "name": "any dev host", "dns": ["*.dev.example"], "dsl": { "term": { "env": "dev" } } }
-    ]
-  }
+  [
+    {
+      "dns": ["logs.prod.example"],
+      "forms": [
+        { "name": "prod errors", "dsl": { "match_phrase": { "level": "ERROR" } } },
+        { "name": "prod only", "dsl": { "term": { "env": "prod" } } }
+      ]
+    },
+    {
+      "dns": ["*.dev.example", "localhost"],
+      "forms": [
+        { "name": "dev noise", "dsl": { "term": { "env": "dev" } } },
+        { "name": "everywhere", "dns": ["*"], "dsl": { "match_all": {} } }
+      ]
+    }
+  ]
   ```
 
-  `dns` limits where a form appears, matched against the hostname of the tab: on the file it gates
-  every form in it, on a form it gates that one button. Omit it — or use `"*"` — for everywhere, and
-  `"*.example.com"` to match any subdomain. A plain array of forms, or a `{ "name": clause }` map,
-  still loads as before. A top-level `"query"` wrapper and search-body keys (`size`, `sort`,
-  `_source`, …) are stripped, so a body pasted straight out of the dev console works.
+  `dns` limits where a form appears, matched against the hostname of the tab. Put it on a group to
+  gate every form in that group, or on a single form to gate that one button — a form's own `dns`
+  wins over its group's. Omit it, or use `"*"`, for everywhere; `"*.example.com"` matches any
+  subdomain and the bare domain. Groups can be mixed with loose forms in the same array.
+
+  Three older shapes still load unchanged: a flat array of forms, a single
+  `{ "dns": …, "forms": [ … ] }` object, and a `{ "name": clause }` map. A top-level `"query"`
+  wrapper and search-body keys (`size`, `sort`, `_source`, …) are stripped, so a body pasted straight
+  out of the dev console works.
 - **Hide/Show columns** — hide raw Time / container_name / json_payload columns, showing only the overlay
 - **Pop-out window** — pin the popup as a floating window so it stays open while you click OpenSearch
 - **Lucene filter clearing** — Clear buttons strip the field from the query bar

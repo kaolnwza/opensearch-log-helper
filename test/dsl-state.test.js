@@ -407,3 +407,54 @@ test("matches hosts exactly, by wildcard, and by subdomain", () => {
     assert.strictEqual(lfHostMatches(["*.corp.example"], "corp.example.evil.com"), false);
     assert.strictEqual(lfHostMatches(["a.example", "b.example"], "b.example"), true);
 });
+
+test("accepts an array of groups, each with its own dns", () => {
+    const { lfNormalizeFilterForms } = load();
+    const d = { match_all: {} };
+    const res = lfNormalizeFilterForms([
+        {
+            dns: ["logs.prod.example"],
+            forms: [
+                { name: "prod a", dsl: d },
+                { name: "prod b", dsl: d },
+            ],
+        },
+        {
+            dns: ["*.dev.example"],
+            forms: [
+                { name: "dev a", dsl: d },
+                // a form's own dns wins over the group's
+                { name: "dev but really prod", dsl: d, dns: ["logs.prod.example"] },
+            ],
+        },
+    ]);
+    assert.strictEqual(res.skipped, 0);
+    assert.deepStrictEqual(
+        plain(res.forms.map((f) => [f.name, f.dns])),
+        [
+            ["prod a", ["logs.prod.example"]],
+            ["prod b", ["logs.prod.example"]],
+            ["dev a", ["*.dev.example"]],
+            ["dev but really prod", ["logs.prod.example"]],
+        ],
+    );
+});
+
+test("mixes groups and bare forms in one array", () => {
+    const { lfNormalizeFilterForms } = load();
+    const d = { match_all: {} };
+    const res = lfNormalizeFilterForms([
+        { name: "loose", dsl: d },
+        { dns: ["a.example"], forms: [{ name: "grouped", dsl: d }] },
+        { dns: ["b.example"], forms: [{ name: "no dsl" }] },
+    ]);
+    assert.deepStrictEqual(plain(res.forms.map((f) => f.name)), ["loose", "grouped"]);
+    assert.strictEqual(res.skipped, 1);
+});
+
+test("a group with an empty dns leaves its forms ungated", () => {
+    const { lfNormalizeFilterForms, lfHostMatches } = load();
+    const res = lfNormalizeFilterForms([{ forms: [{ name: "x", dsl: { match_all: {} } }] }]);
+    assert.deepStrictEqual(plain(res.forms[0].dns), []);
+    assert.strictEqual(lfHostMatches(res.forms[0].dns, "anywhere.example"), true);
+});

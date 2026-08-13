@@ -1,61 +1,67 @@
-{
-
-  "dns": ["*"],
-  "forms": [
-    {
-      "name": "level ERROR",
-      "dns": ["*"],
-      "dsl": { "match_phrase": { "level": "ERROR" } }
-    },
-    {
-      "name": "errors with a trace",
-      "dsl": {
-        "bool": {
-          "must": [{ "match_phrase": { "level": "ERROR" } }, { "exists": { "field": "trace_id" } }]
-        }
-      }
-    },
-    {
-      "name": "not DEBUG",
-      "dsl": {
-        "bool": {
-          "must_not": [{ "match_phrase": { "level": "DEBUG" } }]
-        }
-      }
-    },
-    {
-      "name": "last hour, one container",
-      "dsl": {
-        "bool": {
-          "must": [
-            { "match_phrase": { "kubernetes.container_name": "api" } },
-            { "range": { "@timestamp": { "gte": "now-1h" } } }
-          ]
-        }
-      }
-    },
-    {
-      "name": "drawdown 621814020349",
-      "dsl": {
-        "query": {
+[
+  {
+    "dns": ["*"],
+    "forms": [
+      {
+        "name": "level ERROR",
+        "dsl": { "match_phrase": { "level": "ERROR" } }
+      },
+      {
+        "name": "errors with a trace",
+        "dsl": {
           "bool": {
             "must": [
-              { "match": { "json_payload": "621814020349" } },
-              { "term": { "kubernetes.container_name": "orch-lending-reversal-drawdown" } }
+              { "match_phrase": { "level": "ERROR" } },
+              { "exists": { "field": "trace_id" } }
+            ]
+          }
+        }
+      },
+      {
+        "name": "not DEBUG",
+        "dsl": {
+          "bool": {
+            "must_not": [{ "match_phrase": { "level": "DEBUG" } }]
+          }
+        }
+      },
+      {
+        "name": "last hour, one container",
+        "dsl": {
+          "bool": {
+            "must": [
+              { "match_phrase": { "kubernetes.container_name": "api" } },
+              { "range": { "@timestamp": { "gte": "now-1h" } } }
             ]
           }
         }
       }
-    },
-    {
-      "name": "pasted search body",
-      "dsl": {
-        "size": 500,
-        "sort": [{ "@timestamp": "desc" }],
-        "query": { "match_phrase": { "level": "INFO" } }
+    ]
+  },
+  {
+    "dns": ["*"],
+    "forms": [
+      {
+        "name": "drawdown 621814020349",
+        "dsl": {
+          "query": {
+            "bool": {
+              "must": [
+                { "match": { "json_payload": "621814020349" } },
+                { "term": { "kubernetes.container_name": "orch-lending-reversal-drawdown" } }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "name": "pasted search body",
+        "dsl": {
+          "size": 500,
+          "sort": [{ "@timestamp": "desc" }],
+          "query": { "match_phrase": { "level": "INFO" } }
+        }
       }
-    }
-  ]
-}
-
-
+    ]
+  }
+]

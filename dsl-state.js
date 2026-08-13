@@ -225,8 +225,20 @@ function lfNormalizeFilterForms(raw) {
 
     if (list) {
         for (const e of list) {
-            if (!e || typeof e !== "object" || Array.isArray(e)) skipped++;
-            else push(e.name, e.dsl, e.dns);
+            if (!e || typeof e !== "object" || Array.isArray(e)) {
+                skipped++;
+                continue;
+            }
+            // A group: several forms sharing one dns, so a single file can
+            // carry a section per environment. A form may still override it.
+            if (Array.isArray(e.forms)) {
+                for (const f of e.forms) {
+                    if (!f || typeof f !== "object" || Array.isArray(f)) skipped++;
+                    else push(f.name, f.dsl, f.dns !== undefined ? f.dns : e.dns);
+                }
+                continue;
+            }
+            push(e.name, e.dsl, e.dns);
         }
     } else if (raw && typeof raw === "object") {
         // name → clause map: `dns` at this level gates the file, not a form
