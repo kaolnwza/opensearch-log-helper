@@ -3963,7 +3963,13 @@ function applyForm(form, isActive) {
     const lucene = lfDslToLucene(clean.query);
     if (lucene.ok && editorTA) {
         lfClearDslFilter(); // never leave a stale pill beside the query
-        setValue(editorTA, lucene.lucene);
+        // The clause it came from, above the Lucene it became. Commented, so
+        // stripLineComment drops it before the query bar ever sees it.
+        const src = JSON.stringify(clean.query, null, 2)
+            .split("\n")
+            .map((l) => "# " + l)
+            .join("\n");
+        setValue(editorTA, `# ${form.name}\n${src}\n${lucene.lucene}`);
         setActiveFormName(form.name);
         renderForms();
         runEditorQuery();
