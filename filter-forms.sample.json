@@ -3,45 +3,6 @@
     "dns": ["*"],
     "forms": [
       {
-        "name": "level ERROR",
-        "dsl": { "match_phrase": { "level": "ERROR" } }
-      },
-      {
-        "name": "errors with a trace",
-        "dsl": {
-          "bool": {
-            "must": [
-              { "match_phrase": { "level": "ERROR" } },
-              { "exists": { "field": "trace_id" } }
-            ]
-          }
-        }
-      },
-      {
-        "name": "not DEBUG",
-        "dsl": {
-          "bool": {
-            "must_not": [{ "match_phrase": { "level": "DEBUG" } }]
-          }
-        }
-      },
-      {
-        "name": "last hour, one container",
-        "dsl": {
-          "bool": {
-            "must": [
-              { "match_phrase": { "kubernetes.container_name": "api" } },
-              { "range": { "@timestamp": { "gte": "now-1h" } } }
-            ]
-          }
-        }
-      }
-    ]
-  },
-  {
-    "dns": ["*"],
-    "forms": [
-      {
         "name": "drawdown 621814020349",
         "dsl": {
           "query": {
