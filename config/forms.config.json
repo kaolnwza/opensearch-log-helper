@@ -1,0 +1,93 @@
+[
+  {
+    "dns": ["logging-prd.aws.clicxapp.tech"],
+    "forms-color": "#ff5555",
+    "links-color": "#50fa7b",
+    "suggest": {
+      "kubernetes.container_name": [
+        "adaptor-account-cdd",
+        "adaptor-account-dcb-vb",
+        "adaptor-application-ccd",
+        "adaptor-application-channel",
+        "adaptor-application-ncb",
+        "adaptor-document-alfresco",
+        "adaptor-document-cmlos",
+        "adaptor-document-email",
+        "adaptor-document-signing",
+        "adaptor-document-statement",
+        "batch-account-stamp-duty-export",
+        "batch-application-geography",
+        "batch-application-notification",
+        "batch-application-occupation",
+        "batch-application-update-expired",
+        "core-account-accept",
+        "core-account-activate-flow",
+        "core-account-calc-stamp-duty",
+        "core-account-deduct-fees",
+        "core-account-setup-revolvingloan",
+        "core-account-update-kyc",
+        "core-application-appform-package",
+        "core-application-ccd-master",
+        "core-application-compliant-check",
+        "core-application-decision",
+        "core-application-dre-consume",
+        "core-application-ncb-consume",
+        "core-application-personal-info",
+        "core-application-request-consent",
+        "core-application-request-form",
+        "core-application-submit-flow",
+        "core-document-alfresco-consume",
+        "core-document-flow",
+        "core-document-follow-up",
+        "core-document-generate-report-go",
+        "core-document-mgmt",
+        "core-document-resend-contract",
+        "core-document-send-email",
+        "core-document-signing",
+        "core-document-statement-consume",
+        "core-foundation-centralize-log",
+        "core-product-master",
+        "dgl-vb",
+        "orch-account-accept",
+        "orch-application-form-mgmt",
+        "orch-application-partner",
+        "orch-document-mgmt",
+        "orch-document-partner",
+        "orch-document-upload",
+        "orch-product-management",
+        "orch-schedule",
+        "proc-gotenberg"
+      ]
+    },
+    "forms": [
+      {
+        "name": "drawdown 621814020349",
+        "dsl": {
+          "query": {
+            "bool": {
+              "must": [
+                { "match": { "json_payload": "621814020349" } },
+                { "term": { "kubernetes.container_name": "orch-lending-reversal-drawdown" } }
+              ]
+            }
+          }
+        },
+        "fields": ["message.code", "message.data"]
+      },
+      {
+        "name": "pasted search body",
+        "dsl": {
+          "size": 500,
+          "sort": [{ "@timestamp": "desc" }],
+          "query": { "match_phrase": { "level": "INFO" } }
+        }
+      }
+    ],
+    "button-link": [
+      {
+        "name": "grafana",
+        "url": "https://monitoring-prd.aws.clicxapp.tech/d/pagqhcc/aws-prd-th-vb-service-dlp-opensearch?"
+      }
+    ]
+  }
+]

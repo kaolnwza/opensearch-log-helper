@@ -1,0 +1,380 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  width: 320px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  background: #1a1a2e;
+  color: #e0e0e0;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px 10px;
+  background: #16213e;
+  border-bottom: 1px solid #0f3460;
+}
+
+.btn-pin {
+  margin-left: auto;
+  background: none;
+  border: 1px solid #1a4a7a;
+  border-radius: 5px;
+  color: #90e0ef;
+  font-size: 14px;
+  padding: 3px 7px;
+  cursor: pointer;
+  line-height: 1;
+  transition: background 0.15s;
+}
+.btn-pin:hover { background: #0f3460; }
+.btn-pin.pinned { color: #00b4d8; border-color: #00b4d8; }
+
+.theme-select {
+  margin-left: auto;
+  background: #0f3460;
+  border: 1px solid #1a4a7a;
+  border-radius: 5px;
+  color: #90e0ef;
+  font-size: 11px;
+  padding: 3px 6px;
+  cursor: pointer;
+  outline: none;
+}
+
+/* ── Donate bar ──────────────────────────────────────── */
+.donate-bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 14px;
+  background: #16213e;
+  border-bottom: 1px solid #0f3460;
+}
+
+.donate-icon { font-size: 14px; flex-shrink: 0; }
+
+.donate-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.donate-update {
+  font-size: 10px;
+  color: #888;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.donate-gh {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  color: #90e0ef;
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.donate-gh:hover { color: #00b4d8; }
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.section-header .label { margin-bottom: 0; }
+
+.btn-clear-section {
+  background: none;
+  border: 1px solid #3a2020;
+  border-radius: 4px;
+  color: #e74c3c;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+  opacity: 0.7;
+}
+.btn-clear-section:hover { background: #3a1a1a; opacity: 1; }
+
+.logo { font-size: 18px; }
+
+h1 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #00b4d8;
+  letter-spacing: 0.3px;
+}
+
+.section {
+  padding: 12px 14px;
+}
+
+.label {
+  display: block;
+  font-weight: 600;
+  color: #90e0ef;
+  margin-bottom: 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.hint {
+  color: #888;
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+
+.hint code {
+  background: #0f3460;
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: #00b4d8;
+  font-family: "SF Mono", Consolas, monospace;
+}
+
+.row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.mt4 { margin-top: 6px; }
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #90e0ef;
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.check-row input {
+  accent-color: #00b4d8;
+  cursor: pointer;
+  margin: 0;
+}
+
+.input {
+  flex: 1;
+  padding: 6px 8px;
+  background: #0f3460;
+  border: 1px solid #1a4a7a;
+  border-radius: 5px;
+  color: #e0e0e0;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.input:focus {
+  border-color: #00b4d8;
+}
+
+.input::placeholder {
+  color: #555;
+}
+
+.select {
+  flex: 1;
+  padding: 5px 6px;
+  background: #0f3460;
+  border: 1px solid #1a4a7a;
+  border-radius: 5px;
+  color: #aaa;
+  font-size: 11px;
+  outline: none;
+  cursor: pointer;
+}
+
+.btn {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.1s;
+  white-space: nowrap;
+}
+
+.btn:hover { opacity: 0.85; }
+.btn:active { transform: scale(0.97); }
+
+.btn-primary {
+  background: #00b4d8;
+  color: #0a0a1a;
+}
+
+.btn-secondary {
+  background: #0f3460;
+  color: #90e0ef;
+  border: 1px solid #1a4a7a;
+}
+
+.btn-danger {
+  background: #c0392b;
+  color: #fff;
+}
+
+.full-width { width: 100%; }
+
+.divider {
+  height: 1px;
+  background: #0f3460;
+  margin: 0 14px;
+}
+
+.status {
+  margin: 8px 14px 12px;
+  padding: 7px 10px;
+  border-radius: 5px;
+  font-size: 12px;
+  text-align: center;
+}
+
+.status.hidden { display: none; }
+
+.status.success {
+  background: #1a3a2e;
+  border: 1px solid #2ecc71;
+  color: #2ecc71;
+}
+
+.status.error {
+  background: #3a1a1a;
+  border: 1px solid #e74c3c;
+  color: #e74c3c;
+}
+
+/* ── Tag input ────────────────────────────────────────── */
+.tag-box {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 6px 8px;
+  background: #0f3460;
+  border: 1px solid #1a4a7a;
+  border-radius: 5px;
+  cursor: text;
+  min-height: 36px;
+  transition: border-color 0.15s;
+}
+
+.tag-box:focus-within {
+  border-color: #00b4d8;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #00b4d8;
+  color: #0a0a1a;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tag-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #0a0a1a;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 1px;
+  opacity: 0.7;
+}
+
+.tag-remove:hover { opacity: 1; }
+
+.tag-input {
+  flex: 1;
+  min-width: 80px;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #e0e0e0;
+  font-size: 12px;
+  padding: 1px 0;
+}
+
+.tag-input::placeholder { color: #555; }
+
+.tag-hint {
+  color: #555;
+  font-size: 10px;
+  margin-top: 4px;
+}
+
+.tag-hint kbd {
+  background: #0f3460;
+  border: 1px solid #1a4a7a;
+  border-radius: 3px;
+  padding: 0 3px;
+  font-size: 10px;
+  color: #90e0ef;
+}
+
+/* ── Kubernetes sub-fields ────────────────────────────── */
+.sub-label {
+  font-size: 11px;
+  color: #6699bb;
+  margin-bottom: 4px;
+  margin-top: 8px;
+}
+.sub-label:first-of-type { margin-top: 6px; }
+.mt8 { margin-top: 8px; }
+
+/* Square-ish icon button, so a row of them fits next to a select */
+.btn-mini {
+  padding: 5px 7px;
+  font-size: 12px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.hidden { display: none !important; }
+
+.btn-icon-clear {
+  background: none;
+  border: 1px solid #3a2020;
+  border-radius: 4px;
+  color: #e74c3c;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 7px;
+  cursor: pointer;
+  flex-shrink: 0;
+  opacity: 0.65;
+  transition: opacity 0.15s, background 0.15s;
+}
+.btn-icon-clear:hover { opacity: 1; background: #3a1a1a; }
+
+.shortcut-hint {
+  color: #444;
+  font-size: 10px;
+  margin-top: 5px;
+  text-align: right;
+}
