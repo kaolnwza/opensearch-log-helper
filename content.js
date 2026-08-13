@@ -3626,6 +3626,7 @@ function openPanel() {
         readStored([FORMS_KEY]).then((d) => {
             filterForms = normalizeStoredForms(d[FORMS_KEY]);
             renderForms();
+            renderLinks();
         }),
     );
     fRow.appendChild(fRefresh);
@@ -3648,6 +3649,19 @@ function openPanel() {
 
     formsBox = el("div", "display:flex;flex-wrap:wrap;gap:5px;");
     body.appendChild(formsBox);
+
+    // ── Links ────────────────────────────────────────────────────────────────
+    linksRow = el(
+        "div",
+        `display:flex;gap:6px;align-items:center;border-top:1px solid ${th.sep};padding-top:8px;`,
+    );
+    linksRow.appendChild(
+        el("span", `color:${th.hdr};font-size:10px;letter-spacing:0.4px;flex:1;`, "LINKS"),
+    );
+    body.appendChild(linksRow);
+
+    linksBox = el("div", "display:flex;flex-wrap:wrap;gap:5px;");
+    body.appendChild(linksBox);
 
     // ── Query editor height ──────────────────────────────────────────────────
     const qRow = el(
@@ -3705,11 +3719,13 @@ function openPanel() {
         renderChips();
         renderList();
         renderForms();
+        renderLinks();
         if (!filterForms.forms.length)
             seedFormsFromBundle().then((seeded) => {
                 if (!seeded) return;
                 filterForms = seeded;
                 renderForms();
+                renderLinks();
             });
     });
 }
@@ -3721,6 +3737,8 @@ function closePanel() {
     formsBox = null;
     formsMeta = null;
     formsSearchInput = null;
+    linksBox = null;
+    linksRow = null;
 }
 
 function togglePanel() {
@@ -3780,6 +3798,7 @@ try {
         if (changes[FORMS_KEY]) {
             filterForms = normalizeStoredForms(changes[FORMS_KEY].newValue);
             renderForms();
+            renderLinks();
         }
     });
 } catch {}
@@ -3803,19 +3822,28 @@ window.addEventListener("message", (e) => {
 // reloaded or shared link lights the right button on its own.
 const FORMS_KEY = "filterForms";
 
-let filterForms = { file: "", loaded: 0, dns: [], forms: [] };
+let filterForms = { file: "", loaded: 0, dns: [], forms: [], links: [] };
 let formsSearch = "";
 let formsBox = null;
 let formsMeta = null;
 let formsSearchInput = null;
+let linksBox = null;
+let linksRow = null;
 
+// Storage is not trusted any more than the file was: an older version, or
+// another extension, could have left a `javascript:` url in there, so the
+// stored shape is fed back through the same normaliser before it is painted.
 function normalizeStoredForms(raw) {
-    const { forms } = lfNormalizeFilterForms(raw?.forms || []);
+    const { forms, links } = lfNormalizeFilterForms({
+        forms: raw?.forms || [],
+        [LF_LINK_KEY]: raw?.links || [],
+    });
     return {
         file: String(raw?.file || ""),
         loaded: Number(raw?.loaded) || 0,
         dns: lfNormalizeHosts(raw?.dns),
         forms,
+        links,
     };
 }
 
@@ -3828,6 +3856,12 @@ function formsForThisHost() {
     return filterForms.forms.filter((f) => lfHostMatches(f.dns || [], host));
 }
 
+function linksForThisHost() {
+    const host = location.hostname;
+    if (!lfHostMatches(filterForms.dns || [], host)) return [];
+    return (filterForms.links || []).filter((l) => lfHostMatches(l.dns || [], host));
+}
+
 // First run has nothing stored, and an empty panel section teaches nobody what
 // the file should look like — so the bundled sample is seeded once. Loading a
 // file of your own overwrites it and it is never re-seeded after that.
@@ -3837,9 +3871,11 @@ async function seedFormsFromBundle() {
     try {
         const url = chrome.runtime?.getURL?.(FORMS_BUNDLED);
         if (!url) return null;
-        const { forms, dns } = lfNormalizeFilterForms(await (await fetch(url)).json());
+        const { forms, links, dns } = lfNormalizeFilterForms(
+            await (await fetch(url)).json(),
+        );
         if (!forms.length) return null;
-        const store = { file: FORMS_BUNDLED, loaded: Date.now(), dns, forms };
+        const store = { file: FORMS_BUNDLED, loaded: Date.now(), dns, forms, links };
         chrome.storage?.local?.set({ [FORMS_KEY]: store });
         return store;
     } catch {
@@ -3909,6 +3945,30 @@ function renderForms() {
     });
 }
 
+// Links ride in the same file as the forms, so the whole section appears and
+// disappears with the file — an empty "LINKS" header would only be noise.
+function renderLinks() {
+    if (!linksBox) return;
+    const links = linksForThisHost();
+    if (linksRow) linksRow.style.display = links.length ? "" : "none";
+
+    linksBox.textContent = "";
+    linksBox.style.display = links.length ? "flex" : "none";
+
+    links.forEach((link) => {
+        const b = panelButton(
+            link.name.length > 22 ? link.name.slice(0, 21) + "…" : link.name,
+        );
+        b.style.flex = "0 0 auto";
+        b.title = `${link.name} — ${link.url}`;
+        b.addEventListener("click", () => {
+            // noopener: the new tab must not reach back into Discover
+            window.open(link.url, "_blank", "noopener,noreferrer");
+        });
+        linksBox.appendChild(b);
+    });
+}
+
 function loadFormsFile(file) {
     const reader = new FileReader();
     reader.onerror = () => lfToast("Could not read that file");
@@ -3919,16 +3979,20 @@ function loadFormsFile(file) {
         } catch (e) {
             return lfToast(e.message, 4000);
         }
-        const { forms, skipped, dns } = lfNormalizeFilterForms(raw);
-        if (!forms.length) return lfToast("No valid filter forms in that file", 3500);
+        const { forms, links, skipped, dns } = lfNormalizeFilterForms(raw);
+        // A file of nothing but links is a legitimate file
+        if (!forms.length && !links.length)
+            return lfToast("No valid filter forms in that file", 3500);
 
-        filterForms = { file: file.name, loaded: Date.now(), dns, forms };
+        filterForms = { file: file.name, loaded: Date.now(), dns, forms, links };
         try {
             chrome.storage?.local?.set({ [FORMS_KEY]: filterForms });
         } catch {}
         renderForms();
+        renderLinks();
         const here = formsForThisHost().length;
         const notes = [`Loaded ${forms.length} forms`];
+        if (links.length) notes.push(`${links.length} links`);
         if (here !== forms.length) notes.push(`${here} for ${location.hostname}`);
         if (skipped) notes.push(`${skipped} skipped`);
         lfToast(notes.join(" · "), notes.length > 1 ? 4000 : 2200);

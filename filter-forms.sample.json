@@ -23,6 +23,12 @@
           "query": { "match_phrase": { "level": "INFO" } }
         }
       }
+    ],
+    "button-link": [
+      {
+        "name": "xxx",
+        "url": "https://www.google.com/"
+      }
     ]
   }
 ]

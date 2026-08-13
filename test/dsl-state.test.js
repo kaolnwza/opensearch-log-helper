@@ -179,8 +179,79 @@ test("suffixes duplicate names", () => {
 
 test("normalising junk yields an empty list, not a throw", () => {
     const { lfNormalizeFilterForms } = load();
-    assert.deepStrictEqual(plain(lfNormalizeFilterForms(null)), { forms: [], skipped: 0, dns: [] });
-    assert.deepStrictEqual(plain(lfNormalizeFilterForms("nope")), { forms: [], skipped: 0, dns: [] });
+    const empty = { forms: [], skipped: 0, dns: [], links: [] };
+    assert.deepStrictEqual(plain(lfNormalizeFilterForms(null)), empty);
+    assert.deepStrictEqual(plain(lfNormalizeFilterForms("nope")), empty);
+});
+
+test("reads button-link entries and inherits the group dns", () => {
+    const { lfNormalizeFilterForms } = load();
+    const res = lfNormalizeFilterForms([
+        {
+            dns: ["logs.corp.example"],
+            forms: [{ name: "f", dsl: { match_all: {} } }],
+            "button-link": [
+                { name: "runbook", url: "https://run.example/x" },
+                { name: "own dns", url: "http://a.example", dns: ["*"] },
+            ],
+        },
+    ]);
+    assert.deepStrictEqual(plain(res.links), [
+        { name: "runbook", url: "https://run.example/x", dns: ["logs.corp.example"] },
+        { name: "own dns", url: "http://a.example", dns: ["*"] },
+    ]);
+    assert.strictEqual(res.skipped, 0);
+});
+
+test("takes button-link beside a top-level forms array and in a map file", () => {
+    const { lfNormalizeFilterForms } = load();
+    const link = { name: "x", url: "https://x.example/" };
+    const expected = [{ name: "x", url: "https://x.example/", dns: [] }];
+
+    const withForms = lfNormalizeFilterForms({
+        forms: [{ name: "f", dsl: { match_all: {} } }],
+        "button-link": [link],
+    });
+    assert.deepStrictEqual(plain(withForms.links), expected);
+    assert.deepStrictEqual(plain(withForms.forms.map((f) => f.name)), ["f"]);
+
+    // in a map file `button-link` is the link list, never a form named that
+    const asMap = lfNormalizeFilterForms({
+        cus1: { term: { customer_id: "cus1" } },
+        "button-link": [link],
+    });
+    assert.deepStrictEqual(plain(asMap.links), expected);
+    assert.deepStrictEqual(plain(asMap.forms.map((f) => f.name)), ["cus1"]);
+});
+
+// A shared forms file is executable input: a javascript: url would run in the
+// page the moment its button is clicked.
+test("skips links that are not http(s)", () => {
+    const { lfNormalizeFilterForms } = load();
+    const res = lfNormalizeFilterForms([
+        {
+            "button-link": [
+                { name: "ok", url: "https://ok.example" },
+                { name: "xss", url: "javascript:alert(1)" },
+                { name: "data", url: "data:text/html,<script>x</script>" },
+                { name: "rel", url: "/app/discover" },
+                { name: "no url" },
+                { name: "", url: "https://nameless.example" },
+                "nonsense",
+            ],
+        },
+    ]);
+    assert.deepStrictEqual(plain(res.links.map((l) => l.name)), ["ok"]);
+    assert.strictEqual(res.skipped, 6);
+});
+
+test("a links-only group is not counted as a skipped form", () => {
+    const { lfNormalizeFilterForms } = load();
+    const res = lfNormalizeFilterForms([
+        { dns: ["*"], "button-link": [{ name: "x", url: "https://x.example" }] },
+    ]);
+    assert.deepStrictEqual(plain(res.forms), []);
+    assert.strictEqual(res.skipped, 0);
 });
 
 test("strips search-body keys and names them", () => {

@@ -206,8 +206,21 @@ function lfWriteState(found, state) {
 // people paste whole search bodies out of their dev console, so both are taken
 // and reduced to one shape here. Every read of the store goes through this.
 
+// The same file also carries `button-link` entries — plain links to whatever
+// dashboard or runbook belongs next to those forms. The scheme is checked
+// here, at the only door into the store: a `javascript:` url out of a shared
+// file would run in the page the moment someone clicks its button.
+// `var`, like LF_SUGGEST_KEY: content.js reads this one across the file split
+var LF_LINK_KEY = "button-link";
+
+function lfSafeLinkUrl(raw) {
+    const url = typeof raw === "string" ? raw.trim() : "";
+    return /^https?:\/\/\S/i.test(url) ? url : "";
+}
+
 function lfNormalizeFilterForms(raw) {
     const entries = [];
+    const links = [];
     let skipped = 0;
 
     const push = (name, dsl, dns) => {
@@ -215,6 +228,18 @@ function lfNormalizeFilterForms(raw) {
         if (!dsl || typeof dsl !== "object" || Array.isArray(dsl))
             return void skipped++;
         entries.push({ name: name.trim(), dsl, dns: lfNormalizeHosts(dns) });
+    };
+
+    const pushLink = (e, dns) => {
+        if (!e || typeof e !== "object" || Array.isArray(e)) return void skipped++;
+        const name = typeof e.name === "string" ? e.name.trim() : "";
+        const url = lfSafeLinkUrl(e.url);
+        if (!name || !url) return void skipped++;
+        links.push({
+            name,
+            url,
+            dns: lfNormalizeHosts(e.dns !== undefined ? e.dns : dns),
+        });
     };
 
     const list = Array.isArray(raw)
@@ -229,13 +254,15 @@ function lfNormalizeFilterForms(raw) {
                 skipped++;
                 continue;
             }
-            // A group: several forms sharing one dns, so a single file can
-            // carry a section per environment. A form may still override it.
-            if (Array.isArray(e.forms)) {
-                for (const f of e.forms) {
+            // A group: several forms and links sharing one dns, so a single
+            // file can carry a section per environment. An entry may still
+            // override it.
+            if (Array.isArray(e.forms) || Array.isArray(e[LF_LINK_KEY])) {
+                for (const f of e.forms || []) {
                     if (!f || typeof f !== "object" || Array.isArray(f)) skipped++;
                     else push(f.name, f.dsl, f.dns !== undefined ? f.dns : e.dns);
                 }
+                for (const l of e[LF_LINK_KEY] || []) pushLink(l, e.dns);
                 continue;
             }
             push(e.name, e.dsl, e.dns);
@@ -243,12 +270,16 @@ function lfNormalizeFilterForms(raw) {
     } else if (raw && typeof raw === "object") {
         // name → clause map: `dns` at this level gates the file, not a form
         for (const [k, v] of Object.entries(raw)) {
-            if (k === "dns") continue;
+            if (k === "dns" || k === LF_LINK_KEY) continue;
             push(k, v);
         }
     } else {
-        return { forms: [], skipped: 0, dns: [] };
+        return { forms: [], skipped: 0, dns: [], links: [] };
     }
+
+    // Links may also sit beside a top-level `forms` array, or in a map file
+    if (!Array.isArray(raw) && Array.isArray(raw?.[LF_LINK_KEY]))
+        for (const l of raw[LF_LINK_KEY]) pushLink(l, undefined);
 
     // Names are the button labels *and* the pill alias we match on, so two
     // forms may not share one.
@@ -259,7 +290,7 @@ function lfNormalizeFilterForms(raw) {
         used.add(n);
         return { name: n, dsl, dns };
     });
-    return { forms, skipped, dns: lfNormalizeHosts(raw?.dns) };
+    return { forms, skipped, links, dns: lfNormalizeHosts(raw?.dns) };
 }
 
 // Search-body keys alongside a query crash OpenSearch's filter label builder

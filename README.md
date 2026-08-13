@@ -46,6 +46,24 @@ A Chrome extension that supercharges OpenSearch Dashboards Discover with:
   wins over its group's. Omit it, or use `"*"`, for everywhere; `"*.example.com"` matches any
   subdomain and the bare domain. Groups can be mixed with loose forms in the same array.
 
+- **Links** — the same file may carry a `button-link` list beside its forms; each entry becomes a
+  button in the panel's LINKS section that opens its `url` in a new tab. The section only appears
+  when the file has links for this host.
+
+  ```json
+  [
+    {
+      "dns": ["logs.prod.example"],
+      "forms": [{ "name": "prod errors", "dsl": { "match_phrase": { "level": "ERROR" } } }],
+      "button-link": [{ "name": "runbook", "url": "https://wiki.example/runbook" }]
+    }
+  ]
+  ```
+
+  A link inherits its group's `dns` and may override it with its own, exactly like a form. Only
+  `http://` and `https://` urls are kept — anything else is dropped when the file loads, so a shared
+  file cannot smuggle a `javascript:` url into the page.
+
   Three older shapes still load unchanged: a flat array of forms, a single
   `{ "dns": …, "forms": [ … ] }` object, and a `{ "name": clause }` map. A top-level `"query"`
   wrapper and search-body keys (`size`, `sort`, `_source`, …) are stripped, so a body pasted straight
