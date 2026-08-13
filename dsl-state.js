@@ -363,3 +363,106 @@ function lfGetDslFilterAlias() {
     const ours = (found.state.filters || []).find(lfIsOurs);
     return ours ? ours.meta.alias.slice(LF_ALIAS_PREFIX.length) : null;
 }
+
+// ── DSL → Lucene ──────────────────────────────────────────────────────────────
+// A filter pill is invisible in the query bar, cannot be edited, and on some
+// OpenSearch builds is dropped without a word. Lucene pushed through the query
+// bar is visible, editable and re-runnable, so it is the preferred path — the
+// pill is kept only for clauses with no Lucene equivalent.
+
+// Bare tokens keep date math (now-1h) and wildcards working; everything else is
+// quoted, since a space or a colon would otherwise end the term early.
+function lfLuceneValue(v) {
+    const s = String(v);
+    return /^[\w.@:*?+-]+$/.test(s) && !/^[+-]/.test(s)
+        ? s
+        : `"${s.replace(/(["\\])/g, "\\$1")}"`;
+}
+
+function lfRangeToLucene(field, r) {
+    if (!r || typeof r !== "object") return null;
+    const lo = r.gte !== undefined ? r.gte : r.gt;
+    const hi = r.lte !== undefined ? r.lte : r.lt;
+    if (lo === undefined && hi === undefined) return null;
+    const open = r.gt !== undefined ? "{" : "[";
+    const close = r.lt !== undefined ? "}" : "]";
+    const l = lo === undefined ? "*" : lfLuceneValue(lo);
+    const h = hi === undefined ? "*" : lfLuceneValue(hi);
+    return `${field}:${open}${l} TO ${h}${close}`;
+}
+
+function lfDslToLucene(clause) {
+    const listOf = (v) => (Array.isArray(v) ? v : v ? [v] : []);
+
+    function leaf(op, arg) {
+        if (op === "match_all") return "*";
+        if (op === "exists") return arg?.field ? `_exists_:${arg.field}` : null;
+        if (op === "query_string")
+            return typeof arg?.query === "string" ? `(${arg.query})` : null;
+        if (op === "range") {
+            const f = Object.keys(arg || {})[0];
+            return f ? lfRangeToLucene(f, arg[f]) : null;
+        }
+        if (op === "terms") {
+            const f = Object.keys(arg || {})[0];
+            const vals = arg?.[f];
+            if (!f || !Array.isArray(vals) || !vals.length) return null;
+            const ors = vals.map((v) => `${f}:${lfLuceneValue(v)}`).join(" OR ");
+            return vals.length > 1 ? `(${ors})` : ors;
+        }
+        if (["term", "match", "match_phrase", "wildcard", "prefix"].includes(op)) {
+            const f = Object.keys(arg || {})[0];
+            if (!f) return null;
+            let v = arg[f];
+            // Long form: { field: { value: … } } / { field: { query: … } }
+            if (v && typeof v === "object")
+                v = v.value !== undefined ? v.value : v.query;
+            if (v === undefined || v === null) return null;
+            return op === "prefix" ? `${f}:${v}*` : `${f}:${lfLuceneValue(v)}`;
+        }
+        return null;
+    }
+
+    function bool(b) {
+        if (!b || typeof b !== "object") return null;
+
+        const join = (nodes, sep) => {
+            const parts = nodes.map(walk);
+            if (parts.some((p) => p === null)) return null;
+            if (!parts.length) return "";
+            return parts.length > 1 ? `(${parts.join(sep)})` : parts[0];
+        };
+
+        const must = join([...listOf(b.must), ...listOf(b.filter)], " AND ");
+        const should = join(listOf(b.should), " OR ");
+        const nots = listOf(b.must_not).map(walk);
+        if (must === null || should === null || nots.some((n) => n === null))
+            return null;
+
+        const parts = [];
+        if (must) parts.push(must);
+        if (should) parts.push(should);
+        for (const n of nots) parts.push(`NOT ${n}`);
+        if (!parts.length) return null;
+        return parts.length > 1 ? `(${parts.join(" AND ")})` : parts[0];
+    }
+
+    function walk(node) {
+        if (!node || typeof node !== "object" || Array.isArray(node)) return null;
+        const keys = Object.keys(node);
+        if (!keys.length) return null;
+        // Sibling keys at one level are an implicit AND in hand-written DSL
+        if (keys.length > 1) {
+            const parts = keys.map((k) => walk({ [k]: node[k] }));
+            if (parts.some((p) => p === null)) return null;
+            return `(${parts.join(" AND ")})`;
+        }
+        const op = keys[0];
+        return op === "bool" ? bool(node[op]) : leaf(op, node[op]);
+    }
+
+    const lucene = walk(clause);
+    return lucene
+        ? { ok: true, lucene }
+        : { ok: false, error: "no Lucene equivalent for this clause" };
+}

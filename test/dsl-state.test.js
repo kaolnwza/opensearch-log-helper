@@ -305,3 +305,67 @@ test("sweeps the raw hash for an index pattern the structured lookup misses", ()
         "nested-99",
     );
 });
+
+test("converts leaf clauses to Lucene", () => {
+    const { lfDslToLucene } = load();
+    const luc = (c) => lfDslToLucene(c).lucene;
+    assert.strictEqual(luc({ match_phrase: { level: "ERROR" } }), "level:ERROR");
+    assert.strictEqual(luc({ term: { "kubernetes.container_name": "api" } }), "kubernetes.container_name:api");
+    assert.strictEqual(luc({ match: { msg: "payment failed" } }), 'msg:"payment failed"');
+    assert.strictEqual(luc({ term: { level: { value: "WARN" } } }), "level:WARN");
+    assert.strictEqual(luc({ exists: { field: "trace_id" } }), "_exists_:trace_id");
+    assert.strictEqual(luc({ prefix: { path: "/api" } }), "path:/api*");
+    assert.strictEqual(luc({ terms: { level: ["ERROR", "WARN"] } }), "(level:ERROR OR level:WARN)");
+    assert.strictEqual(luc({ query_string: { query: "a AND b" } }), "(a AND b)");
+    assert.strictEqual(luc({ match_all: {} }), "*");
+});
+
+test("converts ranges, including date math and open ends", () => {
+    const { lfDslToLucene } = load();
+    const luc = (c) => lfDslToLucene(c).lucene;
+    assert.strictEqual(luc({ range: { "@timestamp": { gte: "now-1h" } } }), "@timestamp:[now-1h TO *]");
+    assert.strictEqual(luc({ range: { took: { gte: 100, lte: 500 } } }), "took:[100 TO 500]");
+    assert.strictEqual(luc({ range: { took: { gt: 100, lt: 500 } } }), "took:{100 TO 500}");
+});
+
+test("converts bool must / should / must_not", () => {
+    const { lfDslToLucene } = load();
+    const luc = (c) => lfDslToLucene(c).lucene;
+
+    assert.strictEqual(
+        luc({
+            bool: {
+                must: [{ match_phrase: { level: "ERROR" } }, { exists: { field: "trace_id" } }],
+            },
+        }),
+        "(level:ERROR AND _exists_:trace_id)",
+    );
+    assert.strictEqual(
+        luc({ bool: { must_not: [{ match_phrase: { level: "DEBUG" } }] } }),
+        "NOT level:DEBUG",
+    );
+    assert.strictEqual(
+        luc({ bool: { should: [{ term: { a: 1 } }, { term: { b: 2 } }] } }),
+        "(a:1 OR b:2)",
+    );
+    assert.strictEqual(
+        luc({
+            bool: {
+                must: [{ term: { env: "prod" } }],
+                must_not: [{ term: { level: "DEBUG" } }],
+            },
+        }),
+        "(env:prod AND NOT level:DEBUG)",
+    );
+    // filter behaves as must
+    assert.strictEqual(luc({ bool: { filter: [{ term: { a: 1 } }] } }), "a:1");
+});
+
+test("reports clauses with no Lucene equivalent instead of guessing", () => {
+    const { lfDslToLucene } = load();
+    const res = lfDslToLucene({ script: { script: "doc['a'].value > 1" } });
+    assert.strictEqual(res.ok, false);
+    assert.match(res.error, /no Lucene equivalent/);
+    assert.strictEqual(lfDslToLucene({ bool: { must: [{ script: {} }] } }).ok, false);
+    assert.strictEqual(lfDslToLucene(null).ok, false);
+});

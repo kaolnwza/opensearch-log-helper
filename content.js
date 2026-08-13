@@ -3849,7 +3849,7 @@ function formsAge(ms) {
 function renderForms() {
     if (!formsBox) return;
     const th = T();
-    const active = lfGetDslFilterAlias();
+    const active = activeFormName();
     const forms = filterForms.forms;
 
     if (formsMeta)
@@ -3917,32 +3917,69 @@ function loadFormsFile(file) {
     reader.readAsText(file);
 }
 
-// The query editor is deliberately left alone: it compiles to Lucene, a DSL
-// clause is not Lucene, and the pill plus the lit button already say which
-// filter is on.
+// Which form is on. A pill carries its own name in the URL, but the Lucene
+// path leaves no such marker, so the name is remembered here — page-scoped
+// visual state, like the other lf_* keys.
+const ACTIVE_FORM_KEY = "lf_active_form";
+
+function activeFormName() {
+    try {
+        return localStorage.getItem(ACTIVE_FORM_KEY) || lfGetDslFilterAlias();
+    } catch {
+        return lfGetDslFilterAlias();
+    }
+}
+
+function setActiveFormName(name) {
+    try {
+        if (name) localStorage.setItem(ACTIVE_FORM_KEY, name);
+        else localStorage.removeItem(ACTIVE_FORM_KEY);
+    } catch {}
+}
+
+// Lucene first, pill second. A pill is invisible in the query bar, cannot be
+// edited, and some builds drop it silently; Lucene in the bar is visible,
+// editable and actually runs. Only clauses Lucene cannot express fall back.
 //
 // Clicking the lit button is the only remove gesture — there is no separate
-// clear control. Both paths repaint from the URL rather than from a local flag.
+// clear control.
 function applyForm(form, isActive) {
     if (isActive) {
-        const res = lfClearDslFilter();
-        if (!res.ok) return lfToast(res.error, 4000);
+        lfClearDslFilter(); // no-op unless the pill path was used
+        setActiveFormName(null);
         renderForms();
-        return lfToast("Filter cleared");
+        if (!editorTA) return lfToast("Filter cleared");
+        setValue(editorTA, "");
+        return runEditorQuery(); // toasts "Cleared query"
     }
 
     const clean = lfStripBodyKeys(form.dsl);
     if (!clean.ok) return lfToast(`${form.name}: ${clean.error}`, 4000);
 
+    const dropped = clean.dropped.length
+        ? ` · dropped ${clean.dropped.join(", ")}`
+        : "";
+
+    const lucene = lfDslToLucene(clean.query);
+    if (lucene.ok && editorTA) {
+        lfClearDslFilter(); // never leave a stale pill beside the query
+        setValue(editorTA, lucene.lucene);
+        setActiveFormName(form.name);
+        renderForms();
+        runEditorQuery();
+        // runEditorQuery toasts first; this replaces it with the fuller line
+        return lfToast(`Ran · ${form.name}${dropped}`, dropped ? 4000 : 2200);
+    }
+
     const res = lfSetDslFilter(clean.query, form.name);
     if (!res.ok) return lfToast(res.error, 4000);
+    setActiveFormName(form.name);
     renderForms();
 
-    const notes = [`Filter · ${form.name}`];
-    if (clean.dropped.length) notes.push(`dropped ${clean.dropped.join(", ")}`);
+    const notes = [`Filter pill · ${form.name}${dropped}`];
     if (!res.indexResolved)
         notes.push("index pattern unresolved — the pill may not render");
-    lfToast(notes.join(" · "), notes.length > 1 ? 4500 : 2200);
+    lfToast(notes.join(" · "), 4500);
 }
 
 // ── Page UI bootstrap ─────────────────────────────────────────────────────────
