@@ -210,12 +210,27 @@ function lfWriteState(found, state) {
 // dashboard or runbook belongs next to those forms. The scheme is checked
 // here, at the only door into the store: a `javascript:` url out of a shared
 // file would run in the page the moment someone clicks its button.
-// `var`, like LF_SUGGEST_KEY: content.js reads this one across the file split
+// `var`, like LF_SUGGEST_KEY: content.js reads these across the file split
 var LF_LINK_KEY = "button-link";
+// The two sections are painted apart, so each has its own key; plain `color`
+// stays as the one both fall back to.
+var LF_FORMS_COLOR_KEY = "forms-color";
+var LF_LINKS_COLOR_KEY = "links-color";
 
 function lfSafeLinkUrl(raw) {
     const url = typeof raw === "string" ? raw.trim() : "";
     return /^https?:\/\/\S/i.test(url) ? url : "";
+}
+
+// A `color` out of the file ends up inside a style attribute, so only the two
+// shapes CSS can read as a single colour get through — anything carrying a
+// `;`, a `(` or whitespace could close the declaration and add its own.
+function lfSafeColor(raw) {
+    const c = typeof raw === "string" ? raw.trim() : "";
+    return /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(c) ||
+        /^[a-z]{3,20}$/i.test(c)
+        ? c
+        : "";
 }
 
 function lfNormalizeFilterForms(raw) {
@@ -223,23 +238,38 @@ function lfNormalizeFilterForms(raw) {
     const links = [];
     let skipped = 0;
 
-    const push = (name, dsl, dns) => {
+    // `color` is optional and only ever set when the file asked for one, so a
+    // form that never mentions it keeps the shape older versions stored.
+    const withColor = (entry, color) => {
+        const c = lfSafeColor(color);
+        if (c) entry.color = c;
+        return entry;
+    };
+
+    const push = (name, dsl, dns, color) => {
         if (typeof name !== "string" || !name.trim()) return void skipped++;
         if (!dsl || typeof dsl !== "object" || Array.isArray(dsl))
             return void skipped++;
-        entries.push({ name: name.trim(), dsl, dns: lfNormalizeHosts(dns) });
+        entries.push(
+            withColor({ name: name.trim(), dsl, dns: lfNormalizeHosts(dns) }, color),
+        );
     };
 
-    const pushLink = (e, dns) => {
+    const pushLink = (e, dns, color) => {
         if (!e || typeof e !== "object" || Array.isArray(e)) return void skipped++;
         const name = typeof e.name === "string" ? e.name.trim() : "";
         const url = lfSafeLinkUrl(e.url);
         if (!name || !url) return void skipped++;
-        links.push({
-            name,
-            url,
-            dns: lfNormalizeHosts(e.dns !== undefined ? e.dns : dns),
-        });
+        links.push(
+            withColor(
+                {
+                    name,
+                    url,
+                    dns: lfNormalizeHosts(e.dns !== undefined ? e.dns : dns),
+                },
+                e.color !== undefined ? e.color : color,
+            ),
+        );
     };
 
     const list = Array.isArray(raw)
@@ -258,39 +288,79 @@ function lfNormalizeFilterForms(raw) {
             // file can carry a section per environment. An entry may still
             // override it.
             if (Array.isArray(e.forms) || Array.isArray(e[LF_LINK_KEY])) {
+                const fColor =
+                    e[LF_FORMS_COLOR_KEY] !== undefined ? e[LF_FORMS_COLOR_KEY] : e.color;
+                const lColor =
+                    e[LF_LINKS_COLOR_KEY] !== undefined ? e[LF_LINKS_COLOR_KEY] : e.color;
                 for (const f of e.forms || []) {
                     if (!f || typeof f !== "object" || Array.isArray(f)) skipped++;
-                    else push(f.name, f.dsl, f.dns !== undefined ? f.dns : e.dns);
+                    else
+                        push(
+                            f.name,
+                            f.dsl,
+                            f.dns !== undefined ? f.dns : e.dns,
+                            f.color !== undefined ? f.color : fColor,
+                        );
                 }
-                for (const l of e[LF_LINK_KEY] || []) pushLink(l, e.dns);
+                for (const l of e[LF_LINK_KEY] || []) pushLink(l, e.dns, lColor);
                 continue;
             }
-            push(e.name, e.dsl, e.dns);
+            push(e.name, e.dsl, e.dns, e.color);
         }
     } else if (raw && typeof raw === "object") {
-        // name → clause map: `dns` at this level gates the file, not a form
+        // name → clause map: `dns` and the colour keys at this level gate and
+        // paint the file, they are not forms
         for (const [k, v] of Object.entries(raw)) {
-            if (k === "dns" || k === LF_LINK_KEY) continue;
+            if (
+                k === "dns" ||
+                k === "color" ||
+                k === LF_FORMS_COLOR_KEY ||
+                k === LF_LINKS_COLOR_KEY ||
+                k === LF_LINK_KEY
+            )
+                continue;
             push(k, v);
         }
     } else {
-        return { forms: [], skipped: 0, dns: [], links: [] };
+        return {
+            forms: [],
+            skipped: 0,
+            dns: [],
+            links: [],
+            color: "",
+            formsColor: "",
+            linksColor: "",
+        };
     }
 
     // Links may also sit beside a top-level `forms` array, or in a map file
     if (!Array.isArray(raw) && Array.isArray(raw?.[LF_LINK_KEY]))
-        for (const l of raw[LF_LINK_KEY]) pushLink(l, undefined);
+        for (const l of raw[LF_LINK_KEY])
+            pushLink(
+                l,
+                undefined,
+                raw[LF_LINKS_COLOR_KEY] !== undefined ? raw[LF_LINKS_COLOR_KEY] : raw.color,
+            );
 
     // Names are the button labels *and* the pill alias we match on, so two
     // forms may not share one.
     const used = new Set();
-    const forms = entries.map(({ name, dsl, dns }) => {
-        let n = name;
-        for (let i = 2; used.has(n); i++) n = `${name} (${i})`;
+    const forms = entries.map((entry) => {
+        let n = entry.name;
+        for (let i = 2; used.has(n); i++) n = `${entry.name} (${i})`;
         used.add(n);
-        return { name: n, dsl, dns };
+        return { ...entry, name: n };
     });
-    return { forms, skipped, links, dns: lfNormalizeHosts(raw?.dns) };
+    const color = lfSafeColor(raw?.color);
+    return {
+        forms,
+        skipped,
+        links,
+        dns: lfNormalizeHosts(raw?.dns),
+        color,
+        formsColor: lfSafeColor(raw?.[LF_FORMS_COLOR_KEY]) || color,
+        linksColor: lfSafeColor(raw?.[LF_LINKS_COLOR_KEY]) || color,
+    };
 }
 
 // Search-body keys alongside a query crash OpenSearch's filter label builder

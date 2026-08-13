@@ -3599,9 +3599,13 @@ function openPanel() {
         "div",
         `display:flex;gap:6px;align-items:center;border-top:1px solid ${th.sep};padding-top:8px;`,
     );
-    fRow.appendChild(
-        el("span", `color:${th.hdr};font-size:10px;letter-spacing:0.4px;flex:1;`, "FILTER FORMS"),
+    // Kept as a ref: renderForms repaints it in the loaded file's own colour
+    formsHdr = el(
+        "span",
+        `color:${th.hdr};font-size:10px;letter-spacing:0.4px;flex:1;`,
+        "FILTER FORMS",
     );
+    fRow.appendChild(formsHdr);
 
     const fileInput = document.createElement("input");
     fileInput.type = "file";
@@ -3655,9 +3659,12 @@ function openPanel() {
         "div",
         `display:flex;gap:6px;align-items:center;border-top:1px solid ${th.sep};padding-top:8px;`,
     );
-    linksRow.appendChild(
-        el("span", `color:${th.hdr};font-size:10px;letter-spacing:0.4px;flex:1;`, "LINKS"),
+    linksHdr = el(
+        "span",
+        `color:${th.hdr};font-size:10px;letter-spacing:0.4px;flex:1;`,
+        "LINKS",
     );
+    linksRow.appendChild(linksHdr);
     body.appendChild(linksRow);
 
     linksBox = el("div", "display:flex;flex-wrap:wrap;gap:5px;");
@@ -3737,8 +3744,10 @@ function closePanel() {
     formsBox = null;
     formsMeta = null;
     formsSearchInput = null;
+    formsHdr = null;
     linksBox = null;
     linksRow = null;
+    linksHdr = null;
 }
 
 function togglePanel() {
@@ -3822,21 +3831,33 @@ window.addEventListener("message", (e) => {
 // reloaded or shared link lights the right button on its own.
 const FORMS_KEY = "filterForms";
 
-let filterForms = { file: "", loaded: 0, dns: [], forms: [], links: [] };
+let filterForms = {
+    file: "",
+    loaded: 0,
+    dns: [],
+    forms: [],
+    links: [],
+    formsColor: "",
+    linksColor: "",
+};
 let formsSearch = "";
 let formsBox = null;
 let formsMeta = null;
 let formsSearchInput = null;
+let formsHdr = null;
 let linksBox = null;
 let linksRow = null;
+let linksHdr = null;
 
 // Storage is not trusted any more than the file was: an older version, or
 // another extension, could have left a `javascript:` url in there, so the
 // stored shape is fed back through the same normaliser before it is painted.
 function normalizeStoredForms(raw) {
-    const { forms, links } = lfNormalizeFilterForms({
+    const { forms, links, formsColor, linksColor } = lfNormalizeFilterForms({
         forms: raw?.forms || [],
         [LF_LINK_KEY]: raw?.links || [],
+        [LF_FORMS_COLOR_KEY]: raw?.formsColor,
+        [LF_LINKS_COLOR_KEY]: raw?.linksColor,
     });
     return {
         file: String(raw?.file || ""),
@@ -3844,6 +3865,8 @@ function normalizeStoredForms(raw) {
         dns: lfNormalizeHosts(raw?.dns),
         forms,
         links,
+        formsColor,
+        linksColor,
     };
 }
 
@@ -3862,20 +3885,37 @@ function linksForThisHost() {
     return (filterForms.links || []).filter((l) => lfHostMatches(l.dns || [], host));
 }
 
+// A file may paint its own section headers — FILTER FORMS and LINKS take their
+// colour apart, so the panel tells prod from dev at a glance. Several groups
+// can be visible on one host and the header is single: the first coloured entry
+// on show wins, then the file-wide colour for that section, then the theme.
+function sectionColor(entries, fileColor) {
+    const own = entries.find((e) => e.color);
+    return own?.color || fileColor || T().hdr;
+}
+
 // First run has nothing stored, and an empty panel section teaches nobody what
 // the file should look like — so the bundled sample is seeded once. Loading a
 // file of your own overwrites it and it is never re-seeded after that.
-const FORMS_BUNDLED = "filter-forms.sample.json";
+const FORMS_BUNDLED = "config/forms.config.json";
 
 async function seedFormsFromBundle() {
     try {
         const url = chrome.runtime?.getURL?.(FORMS_BUNDLED);
         if (!url) return null;
-        const { forms, links, dns } = lfNormalizeFilterForms(
+        const { forms, links, dns, formsColor, linksColor } = lfNormalizeFilterForms(
             await (await fetch(url)).json(),
         );
         if (!forms.length) return null;
-        const store = { file: FORMS_BUNDLED, loaded: Date.now(), dns, forms, links };
+        const store = {
+            file: FORMS_BUNDLED,
+            loaded: Date.now(),
+            dns,
+            forms,
+            links,
+            formsColor,
+            linksColor,
+        };
         chrome.storage?.local?.set({ [FORMS_KEY]: store });
         return store;
     } catch {
@@ -3899,6 +3939,7 @@ function renderForms() {
     const forms = formsForThisHost();
     const hidden = filterForms.forms.length - forms.length;
 
+    if (formsHdr) formsHdr.style.color = sectionColor(forms, filterForms.formsColor);
     if (formsMeta)
         formsMeta.textContent = filterForms.forms.length
             ? `${filterForms.file || "forms"} · ${forms.length} forms` +
@@ -3951,6 +3992,7 @@ function renderLinks() {
     if (!linksBox) return;
     const links = linksForThisHost();
     if (linksRow) linksRow.style.display = links.length ? "" : "none";
+    if (linksHdr) linksHdr.style.color = sectionColor(links, filterForms.linksColor);
 
     linksBox.textContent = "";
     linksBox.style.display = links.length ? "flex" : "none";
@@ -3979,12 +4021,21 @@ function loadFormsFile(file) {
         } catch (e) {
             return lfToast(e.message, 4000);
         }
-        const { forms, links, skipped, dns } = lfNormalizeFilterForms(raw);
+        const { forms, links, skipped, dns, formsColor, linksColor } =
+            lfNormalizeFilterForms(raw);
         // A file of nothing but links is a legitimate file
         if (!forms.length && !links.length)
             return lfToast("No valid filter forms in that file", 3500);
 
-        filterForms = { file: file.name, loaded: Date.now(), dns, forms, links };
+        filterForms = {
+            file: file.name,
+            loaded: Date.now(),
+            dns,
+            forms,
+            links,
+            formsColor,
+            linksColor,
+        };
         try {
             chrome.storage?.local?.set({ [FORMS_KEY]: filterForms });
         } catch {}

@@ -179,7 +179,15 @@ test("suffixes duplicate names", () => {
 
 test("normalising junk yields an empty list, not a throw", () => {
     const { lfNormalizeFilterForms } = load();
-    const empty = { forms: [], skipped: 0, dns: [], links: [] };
+    const empty = {
+        forms: [],
+        skipped: 0,
+        dns: [],
+        links: [],
+        color: "",
+        formsColor: "",
+        linksColor: "",
+    };
     assert.deepStrictEqual(plain(lfNormalizeFilterForms(null)), empty);
     assert.deepStrictEqual(plain(lfNormalizeFilterForms("nope")), empty);
 });
@@ -243,6 +251,97 @@ test("skips links that are not http(s)", () => {
     ]);
     assert.deepStrictEqual(plain(res.links.map((l) => l.name)), ["ok"]);
     assert.strictEqual(res.skipped, 6);
+});
+
+test("a group colour reaches its forms and links, and an entry overrides it", () => {
+    const { lfNormalizeFilterForms } = load();
+    const res = lfNormalizeFilterForms([
+        {
+            color: "#ff79c6",
+            forms: [
+                { name: "inherits", dsl: { match_all: {} } },
+                { name: "own", color: "rebeccapurple", dsl: { match_all: {} } },
+            ],
+            "button-link": [
+                { name: "inherits", url: "https://a.example" },
+                { name: "own", color: "#0f0", url: "https://b.example" },
+            ],
+        },
+        { name: "uncoloured", dsl: { match_all: {} } },
+    ]);
+    assert.deepStrictEqual(plain(res.forms.map((f) => f.color || null)), [
+        "#ff79c6",
+        "rebeccapurple",
+        null, // an uncoloured form carries no color key at all
+    ]);
+    assert.deepStrictEqual(plain(res.links.map((l) => l.color)), ["#ff79c6", "#0f0"]);
+});
+
+test("forms-color and links-color paint the two sections apart", () => {
+    const { lfNormalizeFilterForms } = load();
+    const res = lfNormalizeFilterForms([
+        {
+            color: "#111111",
+            "forms-color": "#ff5555",
+            "links-color": "#50fa7b",
+            forms: [{ name: "f", dsl: { match_all: {} } }],
+            "button-link": [{ name: "l", url: "https://a.example" }],
+        },
+        {
+            // only the shared key: both sections take it
+            color: "#bd93f9",
+            forms: [{ name: "f2", dsl: { match_all: {} } }],
+            "button-link": [{ name: "l2", url: "https://b.example" }],
+        },
+    ]);
+    assert.deepStrictEqual(plain(res.forms.map((f) => f.color)), ["#ff5555", "#bd93f9"]);
+    assert.deepStrictEqual(plain(res.links.map((l) => l.color)), ["#50fa7b", "#bd93f9"]);
+});
+
+test("file-wide section colours fall back to a file-wide color", () => {
+    const { lfNormalizeFilterForms } = load();
+    const both = lfNormalizeFilterForms({
+        color: "#111111",
+        "links-color": "#50fa7b",
+        forms: [{ name: "f", dsl: { match_all: {} } }],
+    });
+    assert.strictEqual(both.formsColor, "#111111");
+    assert.strictEqual(both.linksColor, "#50fa7b");
+
+    const none = lfNormalizeFilterForms([{ name: "f", dsl: { match_all: {} } }]);
+    assert.deepStrictEqual([none.formsColor, none.linksColor], ["", ""]);
+});
+
+// A colour is written straight into a style attribute
+test("drops a colour that is not a hex or a bare word", () => {
+    const { lfNormalizeFilterForms, lfSafeColor } = load();
+    for (const bad of [
+        "red;background:url(x)",
+        "#12345",
+        "rgb(1,2,3)",
+        "var(--x)",
+        "expression(alert(1))",
+        42,
+    ])
+        assert.strictEqual(lfSafeColor(bad), "", String(bad));
+
+    const res = lfNormalizeFilterForms({
+        color: "red;background:url(x)",
+        forms: [{ name: "f", color: "#abc", dsl: { match_all: {} } }],
+    });
+    assert.strictEqual(res.color, "");
+    assert.strictEqual(res.forms[0].color, "#abc");
+});
+
+test("a top-level colour is not read as a form named color", () => {
+    const { lfNormalizeFilterForms } = load();
+    const res = lfNormalizeFilterForms({
+        color: "#ff79c6",
+        cus1: { term: { customer_id: "cus1" } },
+    });
+    assert.deepStrictEqual(plain(res.forms.map((f) => f.name)), ["cus1"]);
+    assert.strictEqual(res.color, "#ff79c6");
+    assert.strictEqual(res.skipped, 0);
 });
 
 test("a links-only group is not counted as a skipped form", () => {
