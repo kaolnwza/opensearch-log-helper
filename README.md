@@ -16,10 +16,28 @@ A Chrome extension that supercharges OpenSearch Dashboards Discover with:
   `json_payload.loan_app_id`, …) and the values offered after an operator. New / rename /
   duplicate / delete from the popup, plus a ↺ button that restores the built-in preset.
   Values found in the loaded logs are suggested on top of the preset's own list.
-- **Filter forms** — load a `.json` file of named Query DSL clauses in the panel and apply any of
-  them as a filter with one click. Click the lit button again to remove it. Filters you made by hand
-  in OpenSearch are never touched. The bundled `filter-forms.sample.json` is loaded on first run,
-  both as a working set and as the file format to copy.
+- **Filter forms** — load a `.json` file of named Query DSL clauses in the panel and click one to run
+  it. The clause is translated to Lucene, written into the query editor (with the original DSL above
+  it as comments) and run through the search bar; clauses Lucene cannot express fall back to a filter
+  pill. Click the lit button again to clear. The bundled `filter-forms.sample.json` is loaded on
+  first run, both as a working set and as the file format to copy:
+
+  ```json
+  {
+    "dns": ["*"],
+    "forms": [
+      { "name": "level ERROR", "dsl": { "match_phrase": { "level": "ERROR" } } },
+      { "name": "prod only", "dns": ["logs.prod.example"], "dsl": { "term": { "env": "prod" } } },
+      { "name": "any dev host", "dns": ["*.dev.example"], "dsl": { "term": { "env": "dev" } } }
+    ]
+  }
+  ```
+
+  `dns` limits where a form appears, matched against the hostname of the tab: on the file it gates
+  every form in it, on a form it gates that one button. Omit it — or use `"*"` — for everywhere, and
+  `"*.example.com"` to match any subdomain. A plain array of forms, or a `{ "name": clause }` map,
+  still loads as before. A top-level `"query"` wrapper and search-body keys (`size`, `sort`,
+  `_source`, …) are stripped, so a body pasted straight out of the dev console works.
 - **Hide/Show columns** — hide raw Time / container_name / json_payload columns, showing only the overlay
 - **Pop-out window** — pin the popup as a floating window so it stays open while you click OpenSearch
 - **Lucene filter clearing** — Clear buttons strip the field from the query bar

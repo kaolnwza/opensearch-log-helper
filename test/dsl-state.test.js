@@ -146,7 +146,7 @@ test("writing a state leaves the other params untouched", () => {
 test("normalises the three accepted file shapes to the same forms", () => {
     const { lfNormalizeFilterForms } = load();
     const dsl = { term: { customer_id: "cus1" } };
-    const expected = [{ name: "cus1", dsl }];
+    const expected = [{ name: "cus1", dsl, dns: [] }];
 
     assert.deepStrictEqual(plain(lfNormalizeFilterForms([{ name: "cus1", dsl }]).forms), expected);
     assert.deepStrictEqual(plain(lfNormalizeFilterForms({ forms: [{ name: "cus1", dsl }] }).forms), expected);
@@ -179,8 +179,8 @@ test("suffixes duplicate names", () => {
 
 test("normalising junk yields an empty list, not a throw", () => {
     const { lfNormalizeFilterForms } = load();
-    assert.deepStrictEqual(plain(lfNormalizeFilterForms(null)), { forms: [], skipped: 0 });
-    assert.deepStrictEqual(plain(lfNormalizeFilterForms("nope")), { forms: [], skipped: 0 });
+    assert.deepStrictEqual(plain(lfNormalizeFilterForms(null)), { forms: [], skipped: 0, dns: [] });
+    assert.deepStrictEqual(plain(lfNormalizeFilterForms("nope")), { forms: [], skipped: 0, dns: [] });
 });
 
 test("strips search-body keys and names them", () => {
@@ -368,4 +368,42 @@ test("reports clauses with no Lucene equivalent instead of guessing", () => {
     assert.match(res.error, /no Lucene equivalent/);
     assert.strictEqual(lfDslToLucene({ bool: { must: [{ script: {} }] } }).ok, false);
     assert.strictEqual(lfDslToLucene(null).ok, false);
+});
+
+test("carries dns through, on the file and on a form", () => {
+    const { lfNormalizeFilterForms } = load();
+    const res = lfNormalizeFilterForms({
+        dns: "OSD.corp.example",
+        forms: [
+            { name: "everywhere", dsl: { match_all: {} } },
+            { name: "prod only", dsl: { match_all: {} }, dns: ["logs.prod.example"] },
+            { name: "any sub", dsl: { match_all: {} }, dns: "*.dev.example" },
+        ],
+    });
+    assert.deepStrictEqual(plain(res.dns), ["osd.corp.example"]); // lowercased
+    assert.deepStrictEqual(plain(res.forms.map((f) => f.dns)), [
+        [],
+        ["logs.prod.example"],
+        ["*.dev.example"],
+    ]);
+});
+
+test("dns in a name → clause map gates the file, it is not a form", () => {
+    const { lfNormalizeFilterForms } = load();
+    const res = lfNormalizeFilterForms({ dns: ["a.example"], cus1: { term: { a: 1 } } });
+    assert.deepStrictEqual(plain(res.forms.map((f) => f.name)), ["cus1"]);
+    assert.deepStrictEqual(plain(res.dns), ["a.example"]);
+});
+
+test("matches hosts exactly, by wildcard, and by subdomain", () => {
+    const { lfHostMatches } = load();
+    assert.strictEqual(lfHostMatches([], "anything.example"), true); // ungated
+    assert.strictEqual(lfHostMatches(["*"], "anything.example"), true);
+    assert.strictEqual(lfHostMatches(["logs.example"], "logs.example"), true);
+    assert.strictEqual(lfHostMatches(["logs.example"], "LOGS.example"), true);
+    assert.strictEqual(lfHostMatches(["logs.example"], "other.example"), false);
+    assert.strictEqual(lfHostMatches(["*.corp.example"], "osd.corp.example"), true);
+    assert.strictEqual(lfHostMatches(["*.corp.example"], "corp.example"), true);
+    assert.strictEqual(lfHostMatches(["*.corp.example"], "corp.example.evil.com"), false);
+    assert.strictEqual(lfHostMatches(["a.example", "b.example"], "b.example"), true);
 });

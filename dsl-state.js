@@ -210,11 +210,11 @@ function lfNormalizeFilterForms(raw) {
     const entries = [];
     let skipped = 0;
 
-    const push = (name, dsl) => {
+    const push = (name, dsl, dns) => {
         if (typeof name !== "string" || !name.trim()) return void skipped++;
         if (!dsl || typeof dsl !== "object" || Array.isArray(dsl))
             return void skipped++;
-        entries.push({ name: name.trim(), dsl });
+        entries.push({ name: name.trim(), dsl, dns: lfNormalizeHosts(dns) });
     };
 
     const list = Array.isArray(raw)
@@ -226,24 +226,28 @@ function lfNormalizeFilterForms(raw) {
     if (list) {
         for (const e of list) {
             if (!e || typeof e !== "object" || Array.isArray(e)) skipped++;
-            else push(e.name, e.dsl);
+            else push(e.name, e.dsl, e.dns);
         }
     } else if (raw && typeof raw === "object") {
-        for (const [k, v] of Object.entries(raw)) push(k, v);
+        // name → clause map: `dns` at this level gates the file, not a form
+        for (const [k, v] of Object.entries(raw)) {
+            if (k === "dns") continue;
+            push(k, v);
+        }
     } else {
-        return { forms: [], skipped: 0 };
+        return { forms: [], skipped: 0, dns: [] };
     }
 
     // Names are the button labels *and* the pill alias we match on, so two
     // forms may not share one.
     const used = new Set();
-    const forms = entries.map(({ name, dsl }) => {
+    const forms = entries.map(({ name, dsl, dns }) => {
         let n = name;
         for (let i = 2; used.has(n); i++) n = `${name} (${i})`;
         used.add(n);
-        return { name: n, dsl };
+        return { name: n, dsl, dns };
     });
-    return { forms, skipped };
+    return { forms, skipped, dns: lfNormalizeHosts(raw?.dns) };
 }
 
 // Search-body keys alongside a query crash OpenSearch's filter label builder
@@ -465,4 +469,31 @@ function lfDslToLucene(clause) {
     return lucene
         ? { ok: true, lucene }
         : { ok: false, error: "no Lucene equivalent for this clause" };
+}
+
+// ── Host gating ───────────────────────────────────────────────────────────────
+// One form file gets carried between OpenSearch instances — dev, uat, prod —
+// and a container name that exists on one is noise on another. A `dns` entry,
+// on the file or on a single form, limits where it shows up. No `dns` at all
+// means everywhere, which keeps older files working untouched.
+
+function lfNormalizeHosts(raw) {
+    const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    return list
+        .filter((h) => typeof h === "string" && h.trim())
+        .map((h) => h.trim().toLowerCase());
+}
+
+function lfHostMatches(hosts, host) {
+    const want = String(host || "").toLowerCase();
+    if (!hosts.length) return true; // ungated
+    return hosts.some((h) => {
+        if (h === "*") return true;
+        // "*.corp.example" matches any subdomain, and the bare domain too
+        if (h.startsWith("*.")) {
+            const base = h.slice(2);
+            return want === base || want.endsWith("." + base);
+        }
+        return want === h;
+    });
 }

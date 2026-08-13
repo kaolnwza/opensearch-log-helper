@@ -3803,7 +3803,7 @@ window.addEventListener("message", (e) => {
 // reloaded or shared link lights the right button on its own.
 const FORMS_KEY = "filterForms";
 
-let filterForms = { file: "", loaded: 0, forms: [] };
+let filterForms = { file: "", loaded: 0, dns: [], forms: [] };
 let formsSearch = "";
 let formsBox = null;
 let formsMeta = null;
@@ -3814,8 +3814,18 @@ function normalizeStoredForms(raw) {
     return {
         file: String(raw?.file || ""),
         loaded: Number(raw?.loaded) || 0,
+        dns: lfNormalizeHosts(raw?.dns),
         forms,
     };
+}
+
+// The store is shared by every tab, but a form is only meant for the hosts its
+// `dns` names — so the gate is applied here, at paint time, against this tab's
+// host, rather than thrown away at load time.
+function formsForThisHost() {
+    const host = location.hostname;
+    if (!lfHostMatches(filterForms.dns || [], host)) return [];
+    return filterForms.forms.filter((f) => lfHostMatches(f.dns || [], host));
 }
 
 // First run has nothing stored, and an empty panel section teaches nobody what
@@ -3827,9 +3837,9 @@ async function seedFormsFromBundle() {
     try {
         const url = chrome.runtime?.getURL?.(FORMS_BUNDLED);
         if (!url) return null;
-        const { forms } = lfNormalizeFilterForms(await (await fetch(url)).json());
+        const { forms, dns } = lfNormalizeFilterForms(await (await fetch(url)).json());
         if (!forms.length) return null;
-        const store = { file: FORMS_BUNDLED, loaded: Date.now(), forms };
+        const store = { file: FORMS_BUNDLED, loaded: Date.now(), dns, forms };
         chrome.storage?.local?.set({ [FORMS_KEY]: store });
         return store;
     } catch {
@@ -3850,11 +3860,14 @@ function renderForms() {
     if (!formsBox) return;
     const th = T();
     const active = activeFormName();
-    const forms = filterForms.forms;
+    const forms = formsForThisHost();
+    const hidden = filterForms.forms.length - forms.length;
 
     if (formsMeta)
-        formsMeta.textContent = forms.length
-            ? `${filterForms.file || "forms"} · ${forms.length} forms · loaded ${formsAge(filterForms.loaded)}`
+        formsMeta.textContent = filterForms.forms.length
+            ? `${filterForms.file || "forms"} · ${forms.length} forms` +
+              (hidden ? ` · ${hidden} for other hosts` : "") +
+              ` · loaded ${formsAge(filterForms.loaded)}`
             : "";
     // The search box only earns its space once the list stops fitting at a glance
     if (formsSearchInput)
@@ -3863,7 +3876,13 @@ function renderForms() {
     formsBox.textContent = "";
     if (!forms.length) {
         formsBox.appendChild(
-            el("span", `color:${th.empty};font-style:italic;`, "No filter forms — ⤑ Load a .json"),
+            el(
+                "span",
+                `color:${th.empty};font-style:italic;`,
+                filterForms.forms.length
+                    ? `No forms for ${location.hostname}`
+                    : "No filter forms — ⤑ Load a .json",
+            ),
         );
         return;
     }
@@ -3900,19 +3919,19 @@ function loadFormsFile(file) {
         } catch (e) {
             return lfToast(e.message, 4000);
         }
-        const { forms, skipped } = lfNormalizeFilterForms(raw);
+        const { forms, skipped, dns } = lfNormalizeFilterForms(raw);
         if (!forms.length) return lfToast("No valid filter forms in that file", 3500);
 
-        filterForms = { file: file.name, loaded: Date.now(), forms };
+        filterForms = { file: file.name, loaded: Date.now(), dns, forms };
         try {
             chrome.storage?.local?.set({ [FORMS_KEY]: filterForms });
         } catch {}
         renderForms();
-        lfToast(
-            skipped
-                ? `Loaded ${forms.length} forms · ${skipped} skipped`
-                : `Loaded ${forms.length} forms`,
-        );
+        const here = formsForThisHost().length;
+        const notes = [`Loaded ${forms.length} forms`];
+        if (here !== forms.length) notes.push(`${here} for ${location.hostname}`);
+        if (skipped) notes.push(`${skipped} skipped`);
+        lfToast(notes.join(" · "), notes.length > 1 ? 4000 : 2200);
     };
     reader.readAsText(file);
 }
