@@ -41,91 +41,6 @@
     </div>
   </div>
 
-  <div class="section">
-    <button id="btn-expand" class="btn btn-secondary full-width">
-      ▶ Expand All Log Entries
-    </button>
-  </div>
-
-  <div class="divider"></div>
-
-  <!-- Container Name -->
-  <div class="section">
-    <div class="section-header">
-      <label class="label">Container Name</label>
-      <button id="btn-clear-container" class="btn-clear-section" title="Clear from query">✕ Clear</button>
-    </div>
-    <p class="hint">Adds: <code>kubernetes.container_name:"a" AND/OR "b"</code></p>
-
-    <div id="container-tag-box" class="tag-box">
-      <input id="input-container" type="text" class="tag-input" placeholder="Type or pick, then Enter…"
-        list="container-suggestions" autocomplete="off" />
-    </div>
-    <p class="tag-hint">Press <kbd>Enter</kbd> to add · <kbd>Backspace</kbd> to remove last · <kbd>⌘↵</kbd> to apply</p>
-
-    <div class="row mt4">
-      <select id="op-container" class="select">
-        <option value="OR">OR</option>
-        <option value="AND">AND</option>
-      </select>
-      <select id="neg-container" class="select">
-        <option value="must">Must match</option>
-        <option value="must_not">Must NOT match</option>
-      </select>
-    </div>
-
-    <div class="row mt4">
-      <button id="btn-container" class="btn btn-primary full-width">Apply</button>
-    </div>
-    <p class="shortcut-hint">⌘↵ / Ctrl+↵ to apply</p>
-  </div>
-
-  <!-- Filled from the active suggestion preset's kubernetes.container_name values -->
-  <datalist id="container-suggestions"></datalist>
-
-  <div class="divider"></div>
-
-  <!-- JSON Payload Search -->
-  <div class="section">
-    <div class="section-header">
-      <label class="label">JSON Payload Search</label>
-      <button id="btn-clear-payload" class="btn-clear-section" title="Clear from query">✕ Clear</button>
-    </div>
-    <p id="payload-hint" class="hint">Adds: <code id="payload-hint-code"></code></p>
-
-    <div id="tag-box" class="tag-box">
-      <input id="input-payload" type="text" class="tag-input" placeholder="e.g. notification  ·  msg.notification" />
-    </div>
-    <p class="tag-hint">Prefix a term with a field to scope it: <code>msg.</code> <code>tag.</code> <code>loan_app_id.</code> <code>trace_id.</code> <code>span_id.</code> <code>level.</code> — otherwise searches all of <code>json_payload</code></p>
-    <p class="tag-hint">Press <kbd>Enter</kbd> to add · <kbd>Backspace</kbd> to remove last · <kbd>⌘↵</kbd> to apply</p>
-
-    <div class="row mt4">
-      <select id="field-payload" class="select">
-        <option value="json_payload">json_payload</option>
-        <option value="message">message</option>
-        <option value="log">log</option>
-      </select>
-      <select id="op-payload" class="select">
-        <option value="OR">OR</option>
-        <option value="AND">AND</option>
-      </select>
-    </div>
-
-    <div class="row mt4">
-      <select id="mode-payload" class="select">
-        <option value="regex">Regex /.*xxx.*/ (recommended)</option>
-        <option value="wildcard">Wildcard *xxx*</option>
-        <option value="match">Match (exact term)</option>
-      </select>
-    </div>
-
-    <div class="row mt4">
-      <button id="btn-payload" class="btn btn-primary full-width">Apply</button>
-    </div>
-  </div>
-
-  <div class="divider"></div>
-
   <!-- JSON Field Extractor -->
   <div class="section">
     <div class="section-header">
@@ -202,6 +117,17 @@
     </div>
     <p class="tag-hint">Values found in the loaded logs are offered on top of these — list here only what should show up
       before any search has run.</p>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- Page -->
+  <div class="section">
+    <label class="label">Page</label>
+    <label class="check-row" title="OpenSearch's own ▽ ⊕ Add filter strip above the results">
+      <input id="chk-filter-bar" type="checkbox" />
+      <span>Show the “Add filter” bar</span>
+    </label>
   </div>
 
   <div class="divider"></div>

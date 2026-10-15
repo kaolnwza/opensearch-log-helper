@@ -1,1 +1,6 @@
-.claude/
+# Local Claude Code state stays out, but the shared skill ships with the repo
+# so every contributor gets it. Note the "/*" — git cannot re-include a file
+# whose parent directory is itself excluded.
+.claude/*
+!.claude/launch.json
+!.claude/skills/

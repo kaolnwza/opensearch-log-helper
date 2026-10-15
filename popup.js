@@ -19,34 +19,6 @@ async function sendToContent(action, payload = {}) {
   }
 }
 
-// ── Hint updater ───────────────────────────────────────────────────────────
-function hintExample(mode, field) {
-  switch (mode) {
-    case "regex":    return `${field}:/.*xxx.*/ AND ${field}:/.*yyy.*/`;
-    case "wildcard": return `${field}:*xxx* AND ${field}:*yyy*`;
-    case "match":    return `${field}:xxx AND ${field}:yyy`;
-    default:         return "";
-  }
-}
-
-function updateHint() {
-  const hintEl = $("payload-hint-code");
-  const modeEl = $("mode-payload");
-  const fieldEl = $("field-payload");
-  if (hintEl && modeEl && fieldEl)
-    hintEl.textContent = hintExample(modeEl.value, fieldEl.value);
-}
-
-["mode-payload", "field-payload"].forEach((id) => {
-  const el = $(id);
-  if (!el) return;
-  el.addEventListener("change", () => {
-    updateHint();
-    chrome.storage?.local?.set({ payloadMode: $("mode-payload")?.value });
-  });
-});
-updateHint();
-
 // ── Generic tag-input factory ──────────────────────────────────────────────
 // storageKey persists the tags on its own; onChange is for tag lists that live
 // inside a larger stored object (the suggestion presets) and save themselves.
@@ -146,9 +118,7 @@ function makeTagInput({ boxId, inputId, storageKey, onChange }) {
   };
 }
 
-const containerInput = makeTagInput({ boxId: "container-tag-box", inputId: "input-container", storageKey: "containerTags" });
-const payloadInput   = makeTagInput({ boxId: "tag-box",           inputId: "input-payload",   storageKey: "payloadTags"   });
-const extractInput   = makeTagInput({ boxId: "extract-tag-box",   inputId: "input-extract",   storageKey: "extractFields" });
+const extractInput = makeTagInput({ boxId: "extract-tag-box", inputId: "input-extract", storageKey: "extractFields" });
 
 // ── Cmd+Enter / Ctrl+Enter shortcut ───────────────────────────────────────
 document.addEventListener("keydown", (e) => {
@@ -156,25 +126,58 @@ document.addEventListener("keydown", (e) => {
   e.preventDefault();
   const focused = document.activeElement;
 
-  if (focused.id === "input-container" || focused.closest("#container-tag-box")) {
-    $("btn-container").click();
-  } else if (focused.closest("#tag-box") || focused.id === "input-payload") {
-    $("btn-payload").click();
-  } else if (focused.closest("#extract-tag-box") || focused.id === "input-extract") {
+  if (focused.closest("#extract-tag-box") || focused.id === "input-extract") {
     $("btn-extract-apply").click();
   }
 });
 
 // ── Theme ─────────────────────────────────────────────────────────────────
+// The popup paints itself from the same setting it sends to the page. Dark is
+// the stylesheet's default, so only light needs the attribute.
+function paintPopup(theme) {
+  document.documentElement.dataset.theme = theme === "light" ? "light" : "dark";
+}
+
+// One switch for everything: the OpenSearch page, this popup, and the in-page
+// overlays. The page's own setPageDark swings the extension palette with it,
+// so "pageDark" is the only message needed.
 $("theme-select").addEventListener("change", async (e) => {
   const theme = e.target.value;
+  paintPopup(theme);
   chrome.storage?.local?.set({ theme });
-  await sendToContent("setTheme", { theme });
+  const res = await sendToContent("pageDark", { dark: theme === "dark" });
+  if (!res?.ok) showStatus(res?.error || "Theme applied here only", "error");
 });
 
-// Restore saved theme
+// Restore saved theme, then let the page correct it — whether the page is dark
+// lives in that page's own localStorage, which outranks the stored preference.
 chrome.storage?.local?.get(["theme"], (data) => {
   if (data.theme) $("theme-select").value = data.theme;
+  paintPopup(data.theme || $("theme-select").value);
+});
+
+sendToContent("pageDark").then((res) => {
+  // Only an actual boolean overrides the stored preference — a reply that
+  // can't tell us (no page, older content script) must leave it alone.
+  if (typeof res?.dark !== "boolean") return;
+  const theme = res.dark ? "dark" : "light";
+  $("theme-select").value = theme;
+  paintPopup(theme);
+});
+
+// ── "Add filter" bar ──────────────────────────────────────────────────────
+// Lives in the page's localStorage, so the page is the source of truth — ask
+// it on open, and leave the box disabled if there is no page to ask.
+$("chk-filter-bar").addEventListener("change", async (e) => {
+  const show = e.target.checked;
+  const res = await sendToContent("filterBar", { hidden: !show });
+  if (res?.ok) showStatus(show ? "“Add filter” bar shown ✓" : "“Add filter” bar hidden");
+  else showStatus(res?.error || "Failed", "error");
+});
+
+sendToContent("filterBar").then((res) => {
+  if (res?.ok) $("chk-filter-bar").checked = !res.hidden;
+  else $("chk-filter-bar").disabled = true;
 });
 
 // ── Pin / pop-out ──────────────────────────────────────────────────────────
@@ -187,58 +190,6 @@ $("btn-pin").addEventListener("click", () => {
   } else {
     window.open(location.href, "_blank", "width=360,height=720");
   }
-});
-
-// ── Expand ────────────────────────────────────────────────────────────────
-$("btn-expand").addEventListener("click", async () => {
-  const res = await sendToContent("expandAll");
-  if (res?.ok) showStatus(`Expanded ${res.count} entr${res.count === 1 ? "y" : "ies"}`);
-  else showStatus(res?.error || "Failed", "error");
-});
-
-// ── Container Name ────────────────────────────────────────────────────────
-$("btn-container").addEventListener("click", async () => {
-  containerInput.flush();
-  const terms = containerInput.getTags();
-  if (!terms.length) return showStatus("Add at least one container name", "error");
-  const mustNot = $("neg-container").value === "must_not";
-  const op      = $("op-container").value;
-  const res = await sendToContent("addMultiFilter", {
-    field: "kubernetes.container_name",
-    terms,
-    op,
-    mode: mustNot ? "term_not" : "term",
-  });
-  if (res?.ok) showStatus(`${terms.length} container filter${terms.length > 1 ? "s" : ""} applied ✓`);
-  else showStatus(res?.error || "Failed", "error");
-});
-
-$("btn-clear-container").addEventListener("click", async () => {
-  containerInput.clear();
-  const res = await sendToContent("removeFilter", { field: "kubernetes.container_name" });
-  showStatus(res?.ok ? "Container filter cleared from query ✓" : "Tags cleared");
-});
-
-// ── Payload search ────────────────────────────────────────────────────────
-$("btn-payload").addEventListener("click", async () => {
-  payloadInput.flush();
-  const terms = payloadInput.getTags();
-  if (!terms.length) return showStatus("Add at least one search term", "error");
-  const res = await sendToContent("addMultiFilter", {
-    field: $("field-payload").value,
-    terms,
-    op:   $("op-payload").value,
-    mode: $("mode-payload").value,
-  });
-  if (res?.ok) showStatus(`${terms.length} filter${terms.length > 1 ? "s" : ""} applied ✓`);
-  else showStatus(res?.error || "Failed", "error");
-});
-
-$("btn-clear-payload").addEventListener("click", async () => {
-  payloadInput.clear();
-  const field = $("field-payload").value;
-  const res = await sendToContent("removeFilter", { field });
-  showStatus(res?.ok ? `${field} cleared from query ✓` : "Tags cleared");
 });
 
 // ── Extractor presets ─────────────────────────────────────────────────────
@@ -359,7 +310,6 @@ const suggestValueInput = makeTagInput({
     if (values.length) preset.values[valueField] = values;
     else delete preset.values[valueField];
     saveSuggestStore();
-    renderContainerDatalist();
   },
 });
 
@@ -395,23 +345,10 @@ function renderValueFieldOptions() {
   suggestValueInput.restore(valueField ? (preset.values[valueField] || []).slice() : []);
 }
 
-// The Container Name box picks from the same list the editor suggests
-function renderContainerDatalist() {
-  const dl = $("container-suggestions");
-  if (!dl) return;
-  dl.textContent = "";
-  (activePreset().values["kubernetes.container_name"] || []).forEach((v) => {
-    const o = document.createElement("option");
-    o.value = v;
-    dl.appendChild(o);
-  });
-}
-
 function renderSuggestUI() {
   renderPresetOptions();
   suggestFieldInput.restore(activePreset().fields.slice());
   renderValueFieldOptions();
-  renderContainerDatalist();
 }
 
 $("suggest-preset").addEventListener("change", (e) => {
@@ -503,26 +440,24 @@ $("btn-suggest-reset").addEventListener("click", () => {
 // ── Clear all ─────────────────────────────────────────────────────────────
 $("btn-clear").addEventListener("click", async () => {
   const res = await sendToContent("clearFilters");
-  if (res?.ok) {
-    payloadInput.clear();
-    showStatus("All filters cleared ✓");
-  } else {
-    showStatus(res?.error || "Failed", "error");
-  }
+  showStatus(res?.ok ? "All filters cleared ✓" : res?.error || "Failed", res?.ok ? "success" : "error");
 });
 
 // ── Restore saved state ───────────────────────────────────────────────────
 chrome.storage?.local?.get(
-  ["containerTags", "payloadTags", "payloadMode", "extractFields", "extractAuto", LF_SUGGEST_KEY],
+  ["extractFields", "extractAuto", LF_SUGGEST_KEY],
   (data) => {
-    if (data.payloadMode) $("mode-payload").value = data.payloadMode;
     suggestStore = lfNormalizeStore(data[LF_SUGGEST_KEY]);
     renderSuggestUI();
-    containerInput.restore(data.containerTags);
-    payloadInput.restore(data.payloadTags);
-    extractInput.restore(data.extractFields);
+
+    // Nothing saved yet — start on the dev preset rather than an empty box.
+    // add() persists it, so the in-page panel and auto-apply see the same list.
+    // A deliberate Clear stores [], which is not the same as never having set it.
+    if (data.extractFields === undefined)
+      EXTRACT_PRESETS.dev.forEach((f) => extractInput.add(f));
+    else extractInput.restore(data.extractFields);
+
     $("chk-extract-auto").checked = Boolean(data.extractAuto);
-    updateHint();
 
     // Opening the popup never re-runs the extractor itself — with auto mode on
     // the content script has already applied the saved fields on page load.

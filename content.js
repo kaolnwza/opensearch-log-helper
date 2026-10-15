@@ -7,15 +7,6 @@ const SELECTORS = {
         'input[placeholder*="Lucene"]',
         'textarea[placeholder*="Search"]',
     ],
-    expandToggle: [
-        '[data-test-subj="docTableExpandToggleColumn"] button',
-        ".kbnDocTableOpen",
-        'button[aria-label="Expand"]',
-        'button.euiButtonIcon[aria-label*="expand"]',
-        "td.osdDocTableCell__toggleDetails button",
-        ".osd-table tbody tr td:first-child button",
-        ".euiTable tbody tr td:first-child button",
-    ],
     filterBadge: [
         '[data-test-subj="filter"]',
         ".globalFilterItem",
@@ -97,111 +88,7 @@ function setNativeValue(input, value) {
     input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-function submitQuery(input) {
-    setTimeout(() => {
-        input.dispatchEvent(
-            new KeyboardEvent("keydown", {
-                key: "Enter",
-                keyCode: 13,
-                bubbles: true,
-            }),
-        );
-        input.dispatchEvent(
-            new KeyboardEvent("keyup", {
-                key: "Enter",
-                keyCode: 13,
-                bubbles: true,
-            }),
-        );
-        const btn =
-            document.querySelector('[data-test-subj="querySubmitButton"]') ||
-            document.querySelector('button[aria-label="Search"]') ||
-            document.querySelector('button[type="submit"]');
-        if (btn) btn.click();
-    }, 120);
-}
-
-// Strips ALL clauses for a given field from a Lucene query string
-function removeFieldFromQuery(q, field) {
-    const esc = field.replace(/\./g, "\\.");
-    // Also match dotted subfields (json_payload → json_payload.msg, …) so a
-    // Clear/re-apply strips scoped clauses too, not just the bare field.
-    const fieldPat = `${esc}(?:\\.[\\w-]+)*`;
-
-    // 1. Remove parenthesized groups that contain this field
-    //    e.g.  AND (json_payload:/.*x.*/ AND json_payload.msg:/.*y.*/)
-    q = q.replace(
-        new RegExp(`\\s*(?:AND|OR)?\\s*\\([^)]*${fieldPat}:[^)]*\\)`, "gi"),
-        "",
-    );
-
-    // 2. Remove individual clauses  (AND/OR? NOT? field:value)
-    //    value = regex /.../, quoted "...", or bare word
-    const val = `(?:\\/[^\\/]*\\/|"[^"]*"|\\S+)`;
-    q = q.replace(
-        new RegExp(`\\s*(?:AND|OR)?\\s*NOT\\s+${fieldPat}:${val}`, "gi"),
-        "",
-    );
-    q = q.replace(new RegExp(`\\s*(?:AND|OR)?\\s*${fieldPat}:${val}`, "gi"), "");
-
-    // 3. Clean up dangling operators and whitespace
-    q = q
-        .replace(/^\s*(?:AND|OR)\s+/i, "")
-        .replace(/\s+(?:AND|OR)\s*$/i, "")
-        .trim();
-    return q;
-}
-
 // ── Actions ───────────────────────────────────────────────────────────────────
-
-function expandAll() {
-    const toggles = findAllElements(SELECTORS.expandToggle);
-    if (!toggles.length)
-        return { ok: false, error: "No expand buttons found on this page." };
-    let expanded = 0;
-    toggles.forEach((btn) => {
-        const isExpanded =
-            btn.getAttribute("aria-expanded") === "true" ||
-            btn.classList.contains("opened");
-        if (!isExpanded) {
-            btn.click();
-            expanded++;
-        }
-    });
-    return { ok: true, count: expanded };
-}
-
-function addFilter({ field, value, mustNot, mode }) {
-    const input = findElement(SELECTORS.queryInput);
-    if (!input)
-        return {
-            ok: false,
-            error: "Query bar not found. Make sure you're on the Discover page.",
-        };
-
-    let clause =
-        mode === "wildcard" ? `${field}:*${value}*` : `${field}:"${value}"`;
-    if (mustNot) clause = `NOT ${clause}`;
-
-    const current = (input.value || "").trim();
-    const next = current ? `${current} AND ${clause}` : clause;
-
-    input.focus();
-    setNativeValue(input, next);
-    submitQuery(input);
-    return { ok: true };
-}
-
-function removeFilter({ field }) {
-    const input = findElement(SELECTORS.queryInput);
-    if (!input) return { ok: false, error: "Query bar not found." };
-
-    const next = removeFieldFromQuery(input.value || "", field);
-    input.focus();
-    setNativeValue(input, next);
-    submitQuery(input);
-    return { ok: true };
-}
 
 function clearFilters() {
     const input = findElement(SELECTORS.queryInput);
@@ -238,75 +125,6 @@ function clearFilters() {
     return { ok: true };
 }
 
-function buildClause(field, term, mode) {
-    switch (mode) {
-        case "term":
-            return `${field}:"${term}"`;
-        case "term_not":
-            return `NOT ${field}:"${term}"`;
-        case "regex":
-            return `${field}:/.*${term}.*/`;
-        case "wildcard":
-            return `${field}:*${term}*`;
-        case "match":
-            return `${field}:${term}`;
-        default:
-            return `${field}:/.*${term}.*/`;
-    }
-}
-
-// json_payload subfields that a search term may target via a "field.value" prefix
-const PAYLOAD_SUBFIELDS = [
-    "msg",
-    "tag",
-    "loan_app_id",
-    "trace_id",
-    "span_id",
-    "level",
-];
-
-// Resolve a raw search term to { field, term }. When the base field is
-// json_payload, a "<subfield>.<value>" prefix scopes the search to that
-// nested field — e.g. "msg.notification" → json_payload.msg : notification.
-// Anything without a recognised prefix stays a plain json_payload search.
-function resolvePayloadTerm(baseField, raw) {
-    if (baseField === "json_payload") {
-        const dot = raw.indexOf(".");
-        if (dot > 0) {
-            const prefix = raw.slice(0, dot);
-            const rest = raw.slice(dot + 1).trim();
-            if (rest && PAYLOAD_SUBFIELDS.includes(prefix))
-                return { field: `json_payload.${prefix}`, term: rest };
-        }
-    }
-    return { field: baseField, term: raw };
-}
-
-function addMultiFilter({ field, terms, op, mode = "regex" }) {
-    const input = findElement(SELECTORS.queryInput);
-    if (!input)
-        return {
-            ok: false,
-            error: "Query bar not found. Make sure you're on the Discover page.",
-        };
-
-    // Strip any existing clauses for this field (and its subfields) first
-    const stripped = removeFieldFromQuery(input.value || "", field);
-
-    const clauses = terms.map((t) => {
-        const { field: f, term } = resolvePayloadTerm(field, t);
-        return buildClause(f, term, mode);
-    });
-    const group =
-        clauses.length > 1 ? `(${clauses.join(` ${op} `)})` : clauses[0];
-    const next = stripped ? `${stripped} AND ${group}` : group;
-
-    input.focus();
-    setNativeValue(input, next);
-    submitQuery(input);
-    return { ok: true };
-}
-
 // ── Query language ────────────────────────────────────────────────────────────
 
 // Poll fn until it returns something truthy (the popover / sidebar renders async)
@@ -323,20 +141,32 @@ function waitFor(fn, timeout = 2000, interval = 60) {
 }
 
 // The switcher button's label is the language currently in use: "Lucene", or
-// "DQL"/"KQL" for kuery.
+// "DQL"/"KQL" for kuery — "kuery" is the internal id, never the label shown.
 function currentLanguage(btn) {
     return (btn.textContent || "").trim().toLowerCase();
 }
 
+// Labels/test-subj suffixes a given internal language id can show up as.
+const LANGUAGE_LABELS = {
+    lucene: ["lucene"],
+    kuery: ["kuery", "dql", "kql"],
+};
+
+function matchesLanguage(label, language) {
+    return (LANGUAGE_LABELS[language] || [language]).includes(label);
+}
+
 // Variant A — popover with one menu item per language.
 function findLanguageMenuItem(language) {
-    const direct = document.querySelector(
-        `[data-test-subj="${language}LanguageMenuItem"]`,
-    );
-    if (direct) return direct;
+    for (const label of LANGUAGE_LABELS[language] || [language]) {
+        const direct = document.querySelector(
+            `[data-test-subj="${label}LanguageMenuItem"]`,
+        );
+        if (direct) return direct;
+    }
     return (
-        [...document.querySelectorAll(LANG_MENU_ITEM)].find(
-            (el) => el.textContent.trim().toLowerCase() === language,
+        [...document.querySelectorAll(LANG_MENU_ITEM)].find((el) =>
+            matchesLanguage(el.textContent.trim().toLowerCase(), language),
         ) || null
     );
 }
@@ -365,8 +195,8 @@ function findLanguageSelect(language) {
     if (!sel || sel.tagName !== "SELECT") return null;
     const opt = [...sel.options].find(
         (o) =>
-            o.value.toLowerCase() === language ||
-            o.textContent.trim().toLowerCase() === language,
+            matchesLanguage(o.value.toLowerCase(), language) ||
+            matchesLanguage(o.textContent.trim().toLowerCase(), language),
     );
     return opt ? { sel, value: opt.value } : null;
 }
@@ -374,7 +204,8 @@ function findLanguageSelect(language) {
 async function setQueryLanguage({ language = "lucene" }) {
     const btn = findElement(LANG_SWITCH_BUTTON);
     if (!btn) return { ok: false, error: "Language switcher not found." };
-    if (currentLanguage(btn) === language) return { ok: true, changed: false };
+    if (matchesLanguage(currentLanguage(btn), language))
+        return { ok: true, changed: false };
 
     btn.click(); // open the popover
 
@@ -404,12 +235,20 @@ async function setQueryLanguage({ language = "lucene" }) {
     }
 
     // Confirm via the button label rather than trusting the click landed.
-    const ok = await waitFor(() => currentLanguage(btn) === language, 1500);
+    const ok = await waitFor(() => matchesLanguage(currentLanguage(btn), language), 1500);
     if (!ok) return { ok: false, error: `Still on "${currentLanguage(btn)}".` };
 
     // The popover stays open on the toggle/select variants.
     if (document.querySelector(".euiPopover__panel")) btn.click();
     return { ok: true, changed: true };
+}
+
+// Every query path submits under DQL now — it lets OpenSearch pick term vs.
+// match from the field's own mapping instead of us faking it with a Lucene
+// regex. Best-effort: if the switcher can't be found/clicked, the query still
+// runs, just under whatever language was already active.
+function ensureDqlLanguage() {
+    return setQueryLanguage({ language: "kuery" });
 }
 
 // ── Discover sidebar fields ───────────────────────────────────────────────────
@@ -688,22 +527,24 @@ const THEMES = {
         null_: "#95a5a6",
     },
     dark: {
-        // Dracula Dark
-        bg: "#282a36",
+        // #25272d and a ramp stepped off it — a dark neutral charcoal, not
+        // Dracula's violet-tinted #282a36/#21222c. Every surface keeps that
+        // same faint cast so nothing reads purple next to anything else.
+        bg: "#25272d",
         border: "#bd93f9",
-        hdr: "#6272a4",
+        hdr: "#7e8bbd",
         fg: "#f8f8f2",
-        empty: "#6272a4",
-        sep: "#44475a",
-        jsonBg: "#21222c",
-        jsonBord: "#44475a",
+        empty: "#7482b0",
+        sep: "#3a3c42",
+        jsonBg: "#202228",
+        jsonBord: "#3a3c42",
         jsonFg: "#f8f8f2",
-        toggle: "#6272a4",
+        toggle: "#7482b0",
         handle: "#bd93f9",
-        comment: "#6272a4", // commented-out query lines
+        comment: "#7e8bbd", // commented-out query lines
         opEq: "#50fa7b", // =  (exact term)
         opRe: "#bd93f9", // =~ (regex), same colour as a /regex/ literal
-        selBg: "rgba(189,147,249,0.35)",
+        selBg: "rgba(255,255,255,0.18)", // selection band — neutral, not violet
         // syntax
         key: "#8be9fd",
         str: "#f1fa8c",
@@ -891,8 +732,9 @@ function resolveSpec(spec, parsed, regexResult) {
 // The value under the cursor is nearly always the next thing you want to filter
 // on, so every overlay cell carries filter-for / filter-out / copy.
 
-// Inside a Lucene phrase only \ and " need escaping
-function luceneQuote(value) {
+// Inside a quoted phrase (Lucene or DQL, same escaping rules) only \ and "
+// need escaping
+function quoteQueryValue(value) {
     return `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
@@ -935,16 +777,14 @@ function queryFieldFor(path) {
 // What the editor would run right now
 function editorClean() {
     if (!editorTA) return null;
-    return glueUnary(
-        upperBooleans(compileQuerySugar(stripQueryComments(editorTA.value))),
-    );
+    return compileQuery(editorTA.value);
 }
 
 // Add a clause to the running query and re-run it. The in-page editor is the
 // source of truth while it still matches the bar; once the two have drifted (a
 // query typed into their bar, or one restored from the URL) the bar wins and
 // the editor is re-seeded from it, so the next click stays consistent.
-function appendClause(clause) {
+async function appendClause(clause) {
     const input = queryBarEl();
     if (!input) return lfToast("Query bar not found — is this the Discover page?");
     const bar = (input.value || "").trim();
@@ -956,18 +796,19 @@ function appendClause(clause) {
             editorTA,
             src ? `${src}\n${bar ? "AND " : ""}${clause}` : clause,
         );
-        runEditorQuery();
+        await runEditorQuery();
         return;
     }
 
     const next = bar ? `${bar} AND ${clause}` : clause;
     if (editorTA) setValue(editorTA, next);
+    await ensureDqlLanguage();
     pushQueryToBar(input, next);
     lfToast("Filter applied");
 }
 
 function filterForValue(path, value, negate) {
-    const clause = `${negate ? "NOT " : ""}${queryFieldFor(path)}:${luceneQuote(value)}`;
+    const clause = `${negate ? "NOT " : ""}${queryFieldFor(path)}:${quoteQueryValue(value)}`;
     appendClause(clause);
 }
 
@@ -1066,7 +907,7 @@ function traceIdForRow(parsed, regexResult, row) {
 
 // One field, one term: the id exactly as it was logged, whole.
 function traceClause(hit) {
-    return `${queryFieldFor(hit.field)}:${luceneQuote(hit.value.trim())}`;
+    return `${queryFieldFor(hit.field)}:${quoteQueryValue(hit.value.trim())}`;
 }
 
 // A ±5 min window is unforgiving: a timestamp that is merely wrong sends the
@@ -1784,13 +1625,13 @@ function startExtract(fields) {
 // column first — it gets hidden again right after via HIDE_FIELDS.
 const REQUIRED_FIELDS = ["json_payload"];
 
-// Full "Apply to Table" sequence: prepare the page (Lucene + json_payload
+// Full "Apply to Table" sequence: prepare the page (DQL + json_payload
 // column), start extracting, then hide the columns the overlays replace.
 // Neither prep step is fatal — extraction still works off the intercepted cache.
 async function applyExtract({ fields = [] }) {
     if (!fields.length) return { ok: false, error: "No fields given" };
 
-    const lang = await setQueryLanguage({ language: "lucene" });
+    const lang = await ensureDqlLanguage();
     const sel = await selectFields({ fields: REQUIRED_FIELDS });
     if (lang.changed || sel.added?.length)
         await new Promise((r) => setTimeout(r, 400)); // let the table re-render
@@ -1984,8 +1825,11 @@ function stripQueryComments(text) {
 }
 
 // ── Shorthand operators ──────────────────────────────────────────────────────
-//   field="value"   → field:"value"          (exact term)
-//   field=~"value"  → field:/.*value.*/      (contains, regex)
+//   field="value"   → field:"value"
+//   field=~"value"  → field:"value"
+// Both compile to the same DQL clause — under the DQL engine OpenSearch itself
+// picks term vs. match from the field's own mapping (keyword vs. text), so the
+// operator is for the query author's intent/readability, not the compiler's.
 // The value may be bare too: level=ERROR, msg=~nil.
 const SUGAR_RE =
     /([A-Za-z_@][\w.@-]*)\s*(=~|=)\s*("(?:\\.|[^"\\])*"|[^\s()]+)/g;
@@ -2020,17 +1864,115 @@ function compileQuerySugar(q) {
     SUGAR_RE.lastIndex = 0;
     while ((m = SUGAR_RE.exec(q))) {
         if (ranges.some(([a, b]) => m.index > a && m.index < b)) continue;
-        const [full, field, op, raw] = m;
+        const [full, field, , raw] = m;
         const val =
             raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw;
-        out +=
-            q.slice(last, m.index) +
-            (op === "=~"
-                ? `${field}:/.*${val.replace(/\//g, "\\/")}.*/`
-                : `${field}:"${val}"`);
+        out += q.slice(last, m.index) + `${field}:"${val}"`;
         last = m.index + full.length;
     }
     return out + q.slice(last);
+}
+
+// ── Value groups ─────────────────────────────────────────────────────────────
+// field:("a", "b") is a Lucene value list; DQL has no implicit OR and no commas
+// there, so it needs field:("a" OR "b"). Values already spelling out their own
+// AND/OR/NOT keep them — only the gaps between bare neighbours become ORs.
+
+// Index of the ")" closing the "(" at `open`, skipping quoted text.
+function matchingParen(s, open) {
+    let depth = 0;
+    for (let i = open; i < s.length; i++) {
+        const c = s[i];
+        if (c === '"') {
+            i++;
+            while (i < s.length && s[i] !== '"') i += s[i] === "\\" ? 2 : 1;
+            continue;
+        }
+        if (c === "(") depth++;
+        else if (c === ")" && --depth === 0) return i;
+    }
+    return -1;
+}
+
+// Split group contents into atoms — a quoted string, a nested (…) group, or a
+// bare word. Whitespace and commas are separators, never atoms.
+function groupAtoms(s) {
+    const atoms = [];
+    let i = 0;
+    while (i < s.length) {
+        const c = s[i];
+        if (c === "," || /\s/.test(c)) {
+            i++;
+        } else if (c === '"') {
+            const start = i++;
+            while (i < s.length && s[i] !== '"') i += s[i] === "\\" ? 2 : 1;
+            atoms.push(s.slice(start, ++i));
+        } else if (c === "(") {
+            const close = matchingParen(s, i);
+            atoms.push(s.slice(i, close === -1 ? undefined : close + 1));
+            i = close === -1 ? s.length : close + 1;
+        } else {
+            const start = i;
+            while (i < s.length && !/[\s,()]/.test(s[i])) i++;
+            atoms.push(s.slice(start, i));
+        }
+    }
+    return atoms;
+}
+
+const GROUP_INFIX = /^(?:and|or)$/i;
+const GROUP_PREFIX = /^(?:not|[!+-])$/i;
+
+function orGroupValues(inner) {
+    const atoms = groupAtoms(inner);
+    if (!atoms.length) return inner;
+
+    let out = "";
+    let prevWasValue = false;
+    for (const atom of atoms) {
+        const infix = GROUP_INFIX.test(atom);
+        if (out) out += prevWasValue && !infix ? " OR " : " ";
+        out += atom;
+        prevWasValue = !infix && !GROUP_PREFIX.test(atom);
+    }
+    return out;
+}
+
+// A group may be reached by any of the three operators — field:(…), field=(…)
+// and field=~(…) all mean the same list, and all compile to field:(…).
+const GROUP_HEAD_RE = /([A-Za-z_@][\w.@-]*)\s*(?::|=~|=)\s*\(/g;
+
+function expandValueGroups(q) {
+    const ranges = protectedRanges(q);
+    let out = "";
+    let last = 0;
+    let m;
+    GROUP_HEAD_RE.lastIndex = 0;
+    while ((m = GROUP_HEAD_RE.exec(q))) {
+        if (ranges.some(([a, b]) => m.index > a && m.index < b)) continue;
+        const open = m.index + m[0].length - 1;
+        const close = matchingParen(q, open);
+        if (close === -1) continue;
+        out +=
+            q.slice(last, m.index) +
+            `${m[1]}:(${orGroupValues(q.slice(open + 1, close))})`;
+        last = close + 1;
+        GROUP_HEAD_RE.lastIndex = last;
+    }
+    return out + q.slice(last);
+}
+
+// The editor's text as OpenSearch will receive it. Order matters: each step
+// assumes the one before it ran. Groups go before the sugar — the sugar's value
+// pattern would otherwise chew the "~" off a "field=~(…)" head and leave the
+// group behind. Prefixes go after it, so that a bare value the sugar has since
+// quoted ("-5", "a!b") is out of reach behind a protected range.
+function compileQuery(src) {
+    return upperBooleans(
+        expandPrefixOps(
+            compileQuerySugar(expandValueGroups(stripQueryComments(src))),
+        ),
+    );
 }
 
 function countCommentLines(text) {
@@ -2147,12 +2089,24 @@ function upperBooleans(q) {
     );
 }
 
-// `!`, `-` and `+` are prefix operators — OpenSearch needs them stuck to the
-// group they negate, so `!\n(…)` must not join up as `! (…)`.
-function glueUnary(q) {
+// ── Prefix operators ─────────────────────────────────────────────────────────
+// DQL has no required/prohibited prefixes at all: `!` and `-` are the Lucene
+// spelling of NOT, and `+` (required) is what every clause in an AND chain
+// already is. Left alone they read as part of the field name, so the search
+// quietly matches nothing rather than failing.
+//
+// The lookbehind is what keeps hyphenated values whole — the `-` in
+// `dgl-dr-workflow` follows a word character, a prefix `-` never does.
+const PREFIX_OP_RE = /(?<![\w"])([!+-])\s*(?=[\w"(])/g;
+
+function expandPrefixOps(q) {
     const ranges = protectedRanges(q);
-    return q.replace(/([!+-])\s+(?=\()/g, (full, op, idx) =>
-        ranges.some(([a, b]) => idx > a && idx < b) ? full : op,
+    return q.replace(PREFIX_OP_RE, (full, op, idx) =>
+        ranges.some(([a, b]) => idx > a && idx < b)
+            ? full
+            : op === "+"
+                ? ""
+                : "NOT ",
     );
 }
 
@@ -2362,16 +2316,15 @@ function pushQueryToBar(input, clean) {
     setTimeout(() => editorTA?.focus(), 800); // keep typing where you were
 }
 
-function runEditorQuery() {
+async function runEditorQuery() {
     if (!editorTA) return;
     const src = editorTA.value;
-    const clean = glueUnary(
-        upperBooleans(compileQuerySugar(stripQueryComments(src))),
-    );
+    const clean = compileQuery(src);
     const input = queryBarEl();
     if (!input) return lfToast("Query bar not found — is this the Discover page?");
 
     saveQuerySource(src);
+    await ensureDqlLanguage();
     pushQueryToBar(input, clean);
 
     const n = countCommentLines(src);
@@ -2798,7 +2751,7 @@ function buildEditor() {
         el(
             "span",
             "flex:1;",
-            '⌘↵ run · ⌘/ comment · ⌥⇧F format · ⌥↓ copy line · f="v" → f:"v" · f=~"v" → f:/.*v.*/ · comments: -- // #',
+            '⌘↵ run · ⌘/ comment · ⌥⇧F format · ⌥↓ copy line · f="v" → f:"v" · f=~"v" → f:"v" (DQL) · comments: -- // #',
         ),
     );
     foot.appendChild(el("span", "letter-spacing:2px;", "⋯"));
@@ -2915,6 +2868,14 @@ function applyChartHidden(chart) {
 // query string, so it is hidden by default (panel checkbox brings it back).
 const CHROME_STYLE_ID = "lf-chrome-style";
 const FILTER_BAR_KEY = "lf_filterbar_hidden";
+const FILTER_BAR_CHK_ID = "lf-filterbar-chk";
+
+// The popup and the ⌗ Fields panel both own a box for this, so whichever moved
+// has to bring the other one along.
+function syncPanelFilterBarCheck() {
+    const cb = document.getElementById(FILTER_BAR_CHK_ID);
+    if (cb) cb.checked = filterBarHidden;
+}
 
 let filterBarHidden = true;
 try {
@@ -2940,6 +2901,14 @@ function setFilterBarHidden(on) {
         localStorage.setItem(FILTER_BAR_KEY, on ? "1" : "0");
     } catch {}
     applyFilterBarHidden();
+    syncPanelFilterBarCheck();
+}
+
+// The popup can't read this itself — it lives in the page's localStorage, not
+// chrome.storage. No `hidden` means "just tell me the current state".
+function filterBarState({ hidden }) {
+    if (typeof hidden === "boolean") setFilterBarHidden(hidden);
+    return { ok: true, hidden: filterBarHidden };
 }
 
 // ── Whole-page dark mode ──────────────────────────────────────────────────────
@@ -2957,15 +2926,17 @@ try {
 // Our own UI themes itself through T() — keep the page rules off it entirely
 const NOT_OURS = ":not(.lf-ui):not(.lf-ui *)";
 
+// The same #25272d ramp as THEMES.dark, so the overlays sit flush on the
+// page instead of floating a shade off it.
 const DARK = {
-    bg: "#21222c",
-    surface: "#282a36",
-    raised: "#2f313f",
-    field: "#1e1f29",
-    text: "#e2e4ec",
-    muted: "#a5adc4",
-    border: "#44475a",
-    line: "#33354a",
+    bg: "#25272d",
+    surface: "#2c2e34",
+    raised: "#33353b",
+    field: "#202228",
+    text: "#e4e4e4",
+    muted: "#a8a8a8",
+    border: "#44464c",
+    line: "#3a3c42",
     link: "#8be9fd",
 };
 
@@ -3119,6 +3090,14 @@ function setPageDark(on) {
     } catch {}
     applyPageDark();
     setTheme(on ? "dark" : "light"); // keep our own panels in step
+}
+
+// Same deal as filterBar — the page owns this in its own localStorage. Setting
+// it also swings the extension's palette, so the resulting theme comes back for
+// the popup to match. (No panel sync needed: setTheme rebuilds the panel.)
+function pageDarkState({ dark }) {
+    if (typeof dark === "boolean") setPageDark(dark);
+    return { ok: true, dark: pageDark, theme: activeTheme };
 }
 
 function mountChartToggle() {
@@ -3614,18 +3593,19 @@ function openPanel() {
     body.appendChild(
         el("div", `color:${th.hdr};font-size:10px;letter-spacing:0.4px;`, "PAGE"),
     );
-    const check = (label, on, onChange) => {
+    const check = (label, on, onChange, id) => {
         const row = el("label", "display:flex;align-items:center;gap:6px;cursor:pointer;");
         const cb = document.createElement("input");
         cb.type = "checkbox";
         cb.checked = on;
+        if (id) cb.id = id;
         cb.addEventListener("change", () => onChange(cb.checked));
         row.appendChild(cb);
         row.appendChild(el("span", "", label));
         body.appendChild(row);
     };
     check("Dark mode (whole page)", pageDark, setPageDark);
-    check("Hide the “Add filter” bar", filterBarHidden, setFilterBarHidden);
+    check("Hide the “Add filter” bar", filterBarHidden, setFilterBarHidden, FILTER_BAR_CHK_ID);
 
     body.appendChild(
         el(
@@ -3743,18 +3723,6 @@ window.addEventListener("message", (e) => {
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     try {
         switch (msg.action) {
-            case "expandAll":
-                sendResponse(expandAll());
-                break;
-            case "addFilter":
-                sendResponse(addFilter(msg));
-                break;
-            case "addMultiFilter":
-                sendResponse(addMultiFilter(msg));
-                break;
-            case "removeFilter":
-                sendResponse(removeFilter(msg));
-                break;
             case "clearFilters":
                 sendResponse(clearFilters());
                 break;
@@ -3781,6 +3749,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
                 break;
             case "setTheme":
                 sendResponse(setTheme(msg.theme));
+                break;
+            case "filterBar":
+                sendResponse(filterBarState(msg));
+                break;
+            case "pageDark":
+                sendResponse(pageDarkState(msg));
                 break;
             default:
                 sendResponse({ ok: false, error: "Unknown action" });
