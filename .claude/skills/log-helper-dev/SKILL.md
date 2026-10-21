@@ -98,10 +98,21 @@ as always. **Do not write filters into the URL hash.** That was tried: the
 state sync on the KTB cluster's build ignores a hash assignment, so the pill
 never attached, the query bar kept its previous text, and every run needed a
 manual reload — including runs with no `=~` in them, which went through the URL
-only to clear a stale pill. `meta.lf` marks a pill as ours, so the next run
-replaces it and leaves hand-added filters alone, and a run with none left sends
-an empty list (`containsPills` remembers whether there is anything to take
-off).
+only to clear a stale pill. **Every run sends the whole list, an empty one included** — the pills mirror
+the `=~` clauses of the run going out, so taking the last run's off is the same
+operation as putting this run's on. Nothing in `content.js` remembers what the
+last run left: a pill outlives the page it was added on, so a counter here is
+already wrong after a reload, and that is how switching `=~` to `=` used to
+leave a pill up for good. With no pills and none of ours up, `setFilters()`
+leaves the list untouched rather than setting an equal one.
+
+A pill is recognised **two** ways, in `isOurs()`: `meta.lf`, and the
+`LF_ALIAS_MARK` (` =~ `) in `meta.alias`. The meta key is the clean one, but
+the filter bar is only documented to *ignore* keys it does not know, not to
+keep them — a pill that has been through the page's own filter state can come
+back without it, and then only the label is left to go by. The label is safe to
+lean on because the bar has to keep it to draw the pill, and nothing in
+OpenSearch's own UI writes a `=~` into one.
 
 A clause that cannot be a pill (inside a group, next to `or`, negated) stays in
 the query, and so does everything when the page keeps no query state in its URL.

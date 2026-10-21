@@ -112,9 +112,18 @@
     '[data-test-subj="queryInput"]',
   ];
 
+  // A pill of ours, by either mark: the meta key, or — for one that has been
+  // through the page's own filter state and come back without it — the label,
+  // which the filter bar has to keep in order to draw the pill.
+  function isOurs(filter, marker, aliasMark) {
+    if (filter?.meta?.[marker]) return true;
+    const alias = filter?.meta?.alias;
+    return !!aliasMark && typeof alias === "string" && alias.includes(aliasMark);
+  }
+
   // Replace the filters marked as ours and leave every other one — including
   // the ones added by clicking a value — exactly where it is.
-  function setFilters(incoming, marker) {
+  function setFilters(incoming, marker, aliasMark) {
     for (const sel of FILTER_ROOTS) {
       const node = document.querySelector(sel);
       if (!node) continue;
@@ -128,7 +137,11 @@
         ...f,
         meta: { ...f.meta, index: f.meta?.index || index },
       }));
-      const kept = current.filter((f) => !f?.meta?.[marker]);
+      const kept = current.filter((f) => !isOurs(f, marker, aliasMark));
+
+      // A run with no `=~` and no pill of ours up has nothing to say to the
+      // filter list — leave it untouched rather than set an equal one.
+      if (!next.length && kept.length === current.length) return true;
 
       if (props.filterManager?.setFilters) props.filterManager.setFilters([...kept, ...next]);
       else props.onFiltersUpdated([...kept, ...next]);
@@ -141,7 +154,7 @@
     if (e.source !== window || e.data?.type !== "__LF_SET_FILTERS__") return;
     let ok = false;
     try {
-      ok = setFilters(e.data.filters || [], e.data.marker || "lf");
+      ok = setFilters(e.data.filters || [], e.data.marker || "lf", e.data.aliasMark);
     } catch {}
     window.postMessage({ type: "__LF_FILTERS__", ok }, "*");
   });

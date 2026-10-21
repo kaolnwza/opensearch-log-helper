@@ -1990,16 +1990,22 @@ function containsShoulds(field, inner) {
 }
 
 // `meta.lf` is how a pill of ours is recognised on the next run; the filter bar
-// ignores meta keys it does not know. `meta.index` is filled in by the page
-// world, which can read the index pattern off the search bar's own props.
+// ignores meta keys it does not know — but it is not asked to *keep* them
+// either, and a filter that has been through the page's own state once may
+// come back without it. So the label carries the mark as well: `=~` is what
+// the author wrote, no part of OpenSearch's own UI produces it, and unlike a
+// meta key of ours the filter bar has to preserve it to draw the pill.
+// `meta.index` is filled in by the page world, which can read the index
+// pattern off the search bar's own props.
 const LF_FILTER_MARK = "lf";
+const LF_ALIAS_MARK = " =~ ";
 
 function containsFilter(field, inner) {
     const label = inner.length > 28 ? `${inner.slice(0, 28)}…` : inner;
     return {
         $state: { store: "appState" },
         meta: {
-            alias: `${field} ~ ${label}`,
+            alias: `${field}${LF_ALIAS_MARK}${label}`,
             disabled: false,
             key: field,
             [LF_FILTER_MARK]: true,
@@ -2040,6 +2046,7 @@ function applyContainsFilters(filters) {
                 type: "__LF_SET_FILTERS__",
                 filters,
                 marker: LF_FILTER_MARK,
+                aliasMark: LF_ALIAS_MARK,
             },
             "*",
         );
@@ -2612,9 +2619,6 @@ function pushQueryToBar(input, clean) {
     setTimeout(() => editorTA?.focus(), 800); // keep typing where you were
 }
 
-// How many pills of ours the last run left up, so a later run can take them off
-let containsPills = 0;
-
 async function runEditorQuery() {
     if (!editorTA) return;
     const src = editorTA.value;
@@ -2625,32 +2629,30 @@ async function runEditorQuery() {
 
     // A `=~` clause reaches further as a filter pill than DQL can take it. The
     // pills go in first — a filter change is a React state change, so the query
-    // submit right after runs against the new filter list. A run with no `=~`
-    // left still sends an empty list while one of ours is up, which is how it
-    // comes off again: our pills always mirror the last run's `=~` clauses.
+    // submit right after runs against the new filter list.
+    //
+    // Every run sends the whole list, even an empty one: our pills mirror the
+    // `=~` clauses of the run that is going out now, so taking the last one's
+    // off is the same operation as putting this one's on. Nothing here
+    // remembers what the last run left — a pill outlives the page it was added
+    // on, so a count kept in this script would be wrong after a reload, and
+    // dropping a `=~` clause would leave the pill up for good.
     const lifted = extractContains(stripQueryComments(src));
-    if (lifted.filters.length || containsPills) {
-        const n = lifted.filters.length;
-        const ok = await applyContainsFilters(
-            lifted.filters.map((f) => containsFilter(f.field, f.value)),
-        );
-        if (ok) {
-            containsPills = n;
-            await ensureDqlLanguage();
-            pushQueryToBar(input, compileQuery(lifted.line));
-            return lfToast(
-                n
-                    ? `Ran query · ${n} contains filter${n > 1 ? "s" : ""} as query DSL`
-                    : "Ran query · contains filter removed",
-            );
-        }
-        // Discover's filter list was not reachable — run it all as DQL instead
+    const pills = lifted.filters.map((f) => containsFilter(f.field, f.value));
+    const lifting = pills.length > 0;
+    const ok = await applyContainsFilters(pills);
+    // Discover's filter list was not reachable — run it all as DQL instead
+    if (!ok && lifting)
         lfToast("Filter bar not reachable — running =~ as DQL", 4000);
-    }
 
-    const clean = compileQuery(src);
+    const clean = compileQuery(ok && lifting ? lifted.line : src);
     await ensureDqlLanguage();
     pushQueryToBar(input, clean);
+
+    if (ok && lifting)
+        return lfToast(
+            `Ran query · ${pills.length} contains filter${pills.length > 1 ? "s" : ""} as query DSL`,
+        );
 
     const n = countCommentLines(src);
     lfToast(

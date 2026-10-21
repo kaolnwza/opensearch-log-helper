@@ -128,7 +128,7 @@ has no `lenient`, so on a field type that takes no wildcard it is refused and
 the search fails — with the reason in a toast, now that shard failures are read
 out.
 
-The pill is an ordinary filter: it shows up labelled `json_payload ~ 90963507…`,
+The pill is an ordinary filter: it shows up labelled `json_payload =~ 063b813d…`,
 and the filter bar's own menu edits, negates, disables or deletes it.
 
 **No page reload, and no URL rewriting.** The pill goes into Discover's own
@@ -140,8 +140,18 @@ answers whether it found the list; if it ever cannot, the clause stays in the
 query as DQL and the editor says so. The query itself takes its usual route,
 set in the query bar and submitted.
 
-Re-running replaces the pill from the last run and leaves every other filter,
-including the ones you added by clicking a value, alone.
+Every run sends the whole list, an empty one included, so the pills always
+mirror the `=~` clauses of the run going out: changing `=~` to `=` takes the
+pill off by the same route that put it on, and nothing in the extension has to
+remember what the last run left — a pill outlives the page it was added on.
+Every other filter, including the ones you added by clicking a value, is left
+alone.
+
+A pill is recognised two ways, because one is not enough: `meta.lf`, which the
+filter bar ignores but is not obliged to *keep*, and the `=~` in the label,
+which it has to keep in order to draw the pill. A pill that has been through
+the page's own filter state and come back without the meta key is still taken
+off.
 
 A rejected search also gets a readable toast now: OpenSearch's own notice says
 only *Error*, while the reason sits in the response the interceptor already
