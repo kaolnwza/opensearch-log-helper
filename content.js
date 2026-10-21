@@ -146,6 +146,9 @@ function currentLanguage(btn) {
     return (btn.textContent || "").trim().toLowerCase();
 }
 
+// DQL's internal id, which is what the switcher and the URL both store.
+const DQL_LANGUAGE = "kuery";
+
 // Labels/test-subj suffixes a given internal language id can show up as.
 const LANGUAGE_LABELS = {
     lucene: ["lucene"],
@@ -248,7 +251,7 @@ async function setQueryLanguage({ language = "lucene" }) {
 // regex. Best-effort: if the switcher can't be found/clicked, the query still
 // runs, just under whatever language was already active.
 function ensureDqlLanguage() {
-    return setQueryLanguage({ language: "kuery" });
+    return setQueryLanguage({ language: DQL_LANGUAGE });
 }
 
 // ── Discover sidebar fields ───────────────────────────────────────────────────
@@ -442,6 +445,14 @@ function purgeOverlays() {
         .forEach((el) => el.removeAttribute("data-lf-key"));
 }
 
+// OpenSearch's own toast for a rejected search says only "Error"; the page
+// world digs the reason out of the response (see interceptor.js) and this is
+// where it becomes readable.
+window.addEventListener("message", (e) => {
+    if (e.source !== window || e.data?.type !== "__LF_SEARCH_ERR__") return;
+    lfToast(`OpenSearch: ${e.data.reason}`, 8000);
+});
+
 // ── Clear overlays immediately on query / navigation change ──────────────
 window.addEventListener("message", (e) => {
     if (e.source !== window) return;
@@ -515,7 +526,7 @@ const THEMES = {
         handle: "#6272a4",
         comment: "#5c9e5c", // commented-out query lines
         opEq: "#2e7d32", // =  (exact term)
-        opRe: "#7a5af8", // =~ (regex), same colour as a /regex/ literal
+        opRe: "#7a5af8", // =~ (contains), same colour as a /regex/ literal
         // Translucent so the coloured text under the textarea stays readable
         selBg: "rgba(98,114,164,0.28)",
         // syntax
@@ -543,7 +554,7 @@ const THEMES = {
         handle: "#bd93f9",
         comment: "#7e8bbd", // commented-out query lines
         opEq: "#50fa7b", // =  (exact term)
-        opRe: "#bd93f9", // =~ (regex), same colour as a /regex/ literal
+        opRe: "#bd93f9", // =~ (contains), same colour as a /regex/ literal
         selBg: "rgba(255,255,255,0.18)", // selection band — neutral, not violet
         // syntax
         key: "#8be9fd",
@@ -958,14 +969,11 @@ function risonEscape(s) {
     return String(s).replace(/!/g, "!!").replace(/'/g, "!'");
 }
 
-// Replace `key` … up to its matching ")" — the value may nest parens (a filter
-// clause does) and may hold quoted strings, so bracket counting is the only
-// way to find the end.
-function replaceBalanced(s, key, replacement, from = 0) {
-    const start = s.indexOf(key, from);
-    if (start < 0) return { out: s, changed: false, end: -1 };
-
-    let i = start + key.length; // just past the opening paren
+// Index just past the ")" closing a "(" already consumed at `from`, or -1. The
+// value may nest parens (a filter clause does) and may hold quoted strings, so
+// bracket counting is the only way to find the end.
+function balancedEnd(s, from) {
+    let i = from;
     let depth = 1;
     let quoted = false;
     while (i < s.length && depth > 0) {
@@ -978,9 +986,17 @@ function replaceBalanced(s, key, replacement, from = 0) {
         else if (c === ")") depth--;
         i++;
     }
-    if (depth !== 0) return { out: s, changed: false, end: -1 };
+    return depth === 0 ? i : -1;
+}
+
+// Replace `key` … up to its matching ")".
+function replaceBalanced(s, key, replacement, from = 0) {
+    const start = s.indexOf(key, from);
+    if (start < 0) return { out: s, changed: false, end: -1 };
+    const end = balancedEnd(s, start + key.length);
+    if (end < 0) return { out: s, changed: false, end: -1 };
     return {
-        out: s.slice(0, start) + replacement + s.slice(i),
+        out: s.slice(0, start) + replacement + s.slice(end),
         changed: true,
         end: start + replacement.length,
     };
@@ -1825,14 +1841,273 @@ function stripQueryComments(text) {
 }
 
 // ── Shorthand operators ──────────────────────────────────────────────────────
-//   field="value"   → field:"value"
-//   field=~"value"  → field:"value"
-// Both compile to the same DQL clause — under the DQL engine OpenSearch itself
-// picks term vs. match from the field's own mapping (keyword vs. text), so the
-// operator is for the query author's intent/readability, not the compiler's.
+//   field="value"     → field:"value"                  whole value
+//   field=~"a-b-c-d"  → field:("a-b-c-d" or "b-c-d")   whole value, or from
+//                                                      its second part on
+// `=` hands the value over untouched: under DQL OpenSearch picks term vs. match
+// from the field's own mapping (keyword vs. text), and either way the clause
+// only matches a whole keyword or a whole phrase.
+//
+// `=~` is the one meant to find a *fragment*, and on an analysed field the
+// obstacle is the analyser's own tokens. The standard analyser cuts at "-" but
+// not at "_", so a payload holding
+//   "wf_traceparent": "01a10f52-…-9ef2eebff491_90963507-9cbc-…"
+// indexes "9ef2eebff491_90963507" as a single token, and the phrase
+// "90963507-9cbc-…" opens on a token no document has: the fragment starts in
+// the middle of one. Dropping its first part lines the rest of the phrase back
+// up with the document's tokens, so `=~` asks for both spellings.
+//
+// A whole-value field — keyword, or the flat_object that holds a json_payload
+// as one string per leaf — has no tokens to line up with at all: there only a
+// wildcard reaches inside the value. DQL takes `*` "in both search terms and
+// field names" but never inside a quoted phrase, so that alternative goes in
+// unquoted, as one term with the separators and the order intact.
+//
+// So `=~` sends the three spellings a fragment can arrive as — the value
+// itself, the phrase from its second part on, `*value*` — OR'd inside the
+// field's own value list, where `f:(a or b)` is `f:a or f:b`. The value as
+// written always leads: `=~` can only ever find more than `=`.
 // The value may be bare too: level=ERROR, msg=~nil.
 const SUGAR_RE =
     /([A-Za-z_@][\w.@-]*)\s*(=~|=)\s*("(?:\\.|[^"\\])*"|[^\s()]+)/g;
+
+// Parts of a value, split where every analyser would: "_" holds a token
+// together, anything that is not a letter, a digit, a combining mark or "_"
+// breaks it. Parts are therefore free of DQL's own punctuation and can go in
+// unquoted — the only form a wildcard survives in.
+const VALUE_SEP_RE = /[^\p{L}\p{M}\p{N}_]+/u;
+// Leading separators, the first part, and the separator after it.
+const FIRST_PART_RE = /^[^\p{L}\p{M}\p{N}_]*[\p{L}\p{M}\p{N}_]+[^\p{L}\p{M}\p{N}_]+/u;
+// How many parts the shortened phrase has to keep to stay worth running:
+// "borrower info" without "borrower" is "info", which matches half the index.
+const CONTAINS_MIN_PARTS = 3;
+
+// A value that can go in unquoted, which is the only way a wildcard survives:
+// no whitespace, and none of DQL's own punctuation.
+const BARE_SAFE_RE = /^[\p{L}\p{M}\p{N}_.@-]+$/u;
+
+// The field side of a contains clause. Same reason as `fieldSubtree()`: the
+// name may be an object whose leaves are what the mapping actually holds, so
+// the clause asks for the subtree. DQL takes `*` "in both search terms and
+// field names", and a trailing one still matches the plain field too.
+function containsField(field) {
+    return `${field}*`;
+}
+
+// The value side of a contains clause: `exact` as the author wrote it, OR'd
+// with the spellings that can still match a fragment. Null when the value holds
+// no part at all ("*", "-"), so the caller can pass it through as it stands,
+// and plain `exact` when no alternative applies.
+function containsValue(exact, inner) {
+    const parts = inner.split(VALUE_SEP_RE).filter(Boolean);
+    if (!parts.length) return null;
+    const alts = [exact];
+    // An analysed field, where the fragment starts mid-token.
+    if (parts.length - 1 >= CONTAINS_MIN_PARTS)
+        alts.push(`"${inner.replace(FIRST_PART_RE, "")}"`);
+    // A whole-value field, where only a wildcard reaches inside the value.
+    if (!inner.includes("*") && BARE_SAFE_RE.test(inner))
+        alts.push(`*${inner}*`);
+    return alts.length > 1 ? `(${alts.join(" or ")})` : exact;
+}
+
+// ── Contains as a filter pill ────────────────────────────────────────────────
+// DQL cannot put a wildcard inside a quoted phrase, and a whole-value field has
+// nothing else to match a fragment with — so the clause that DQL cannot express
+// leaves the query text and travels as a *filter* instead. A filter may carry
+// raw query DSL (what the bar's own "Add filter → Edit as Query DSL" writes),
+// where none of DQL's rules apply. The pill goes into Discover's own filter
+// list through the page world (see interceptor.js), never through the URL.
+
+// query_string's own reserved characters, escaped — everything but the
+// wildcards we add ourselves.
+function escapeQueryString(v) {
+    return v.replace(/([+\-=&|><!(){}[\]^"~*?:\\/])/g, "\\$1");
+}
+
+// A term-level wildcard pattern reads only `*`, `?` and `\` — so the value
+// stays literal, the same way escapeQueryString() keeps it literal.
+function escapeWildcard(v) {
+    return v.replace(/([*?\\])/g, "\\$1");
+}
+
+// A clause names `json_payload`, but the document may hold no such *leaf*: a
+// dynamically mapped payload is an object, and only its leaves
+// (`json_payload.wf_traceparent`, …) are in the mapping. A query against the
+// object's own name is a query against an unmapped field, which matches no
+// document and — this is what hid it — raises no error at all. So every clause
+// asks for the field *and its subtree*: `f.*` is a field pattern, expanded
+// against the mapping, so whichever of the two the payload turns out to be,
+// one of them is real.
+function fieldSubtree(field) {
+    return [field, `${field}.*`];
+}
+
+// The DSL behind one contains filter: the spellings a fragment can arrive as,
+// as `should` clauses — one of them matches whatever the mapping turns out to
+// be. Each one is a form that takes `lenient`, so a leaf of the subtree that
+// cannot answer a clause (a date, a number) is skipped instead of failing the
+// shard — which is how `fields` patterns are usable at all.
+function containsShoulds(field, inner) {
+    const fields = fieldSubtree(field);
+    // The value as written. multi_match of type `phrase` over one field is
+    // match_phrase — the form the query bar itself sends for a quoted DQL
+    // value — but it takes a field pattern and `lenient`, which match_phrase
+    // cannot.
+    const phrase = (v) => ({
+        multi_match: { type: "phrase", query: v, fields, lenient: true },
+    });
+    const should = [phrase(inner)];
+    const parts = inner.split(VALUE_SEP_RE).filter(Boolean);
+    // An analysed field, where the fragment starts mid-token
+    if (parts.length - 1 >= CONTAINS_MIN_PARTS)
+        should.push(phrase(inner.replace(FIRST_PART_RE, "")));
+    // A whole-value field (keyword, flat_object), where only a wildcard
+    // reaches inside the value. The term-level `wildcard` is the one the KTB
+    // cluster's json_payload answers — it is a different code path from
+    // query_string's, which goes through the field's analyser first and comes
+    // back empty here. It takes no field pattern and no `lenient`, so the
+    // query_string form stays as well: it is what reaches a leaf of the
+    // subtree (`json_payload.wf_traceparent`) when the value lives there
+    // rather than in the field itself.
+    should.push({
+        wildcard: {
+            [field]: {
+                value: `*${escapeWildcard(inner)}*`,
+                case_insensitive: true,
+            },
+        },
+    });
+    should.push({
+        query_string: {
+            fields,
+            query: `*${escapeQueryString(inner)}*`,
+            analyze_wildcard: true,
+            lenient: true,
+        },
+    });
+    return should;
+}
+
+// `meta.lf` is how a pill of ours is recognised on the next run; the filter bar
+// ignores meta keys it does not know. `meta.index` is filled in by the page
+// world, which can read the index pattern off the search bar's own props.
+const LF_FILTER_MARK = "lf";
+
+function containsFilter(field, inner) {
+    const label = inner.length > 28 ? `${inner.slice(0, 28)}…` : inner;
+    return {
+        $state: { store: "appState" },
+        meta: {
+            alias: `${field} ~ ${label}`,
+            disabled: false,
+            key: field,
+            [LF_FILTER_MARK]: true,
+            negate: false,
+            type: "custom",
+        },
+        query: {
+            bool: {
+                minimum_should_match: 1,
+                should: containsShoulds(field, inner),
+            },
+        },
+    };
+}
+
+// Hand the filters to the page world, which puts them in Discover's own filter
+// list (see interceptor.js) — a React state change, so the pill appears and the
+// search re-runs with no reload and no URL surgery. Resolves false when it
+// could not find the filter list, and the caller then leaves the clause in the
+// query text.
+function applyContainsFilters(filters) {
+    return new Promise((resolve) => {
+        const done = (ok) => {
+            clearTimeout(timer);
+            window.removeEventListener("message", onMsg);
+            resolve(ok);
+        };
+        const onMsg = (e) => {
+            if (e.source === window && e.data?.type === "__LF_FILTERS__")
+                done(!!e.data.ok);
+        };
+        // The page world answers on the next task when it is there at all, so
+        // this only runs out when the MAIN-world half never loaded.
+        const timer = setTimeout(() => done(false), 500);
+        window.addEventListener("message", onMsg);
+        window.postMessage(
+            {
+                type: "__LF_SET_FILTERS__",
+                filters,
+                marker: LF_FILTER_MARK,
+            },
+            "*",
+        );
+    });
+}
+
+// Unclosed "(" before the end of `s`, quoted text skipped: a clause inside a
+// group is not on the top level.
+function parenDepth(s, ranges) {
+    let d = 0;
+    for (let i = 0; i < s.length; i++) {
+        if (ranges.some(([a, b]) => i > a && i < b)) continue;
+        if (s[i] === "(") d++;
+        else if (s[i] === ")") d--;
+    }
+    return d;
+}
+
+// Lift the `=~` clauses that can become pills out of the query line. Filters
+// are ANDed with the query, so only a clause on the top level of an AND chain
+// qualifies — one inside a group, next to `or`, or negated stays where the
+// author put it and compiles into the query as before.
+function extractContains(line) {
+    const ranges = protectedRanges(line);
+    const cuts = [];
+    const filters = [];
+    let m;
+    SUGAR_RE.lastIndex = 0;
+    while ((m = SUGAR_RE.exec(line))) {
+        if (m[2] !== "=~") continue;
+        if (ranges.some(([a, b]) => m.index > a && m.index < b)) continue;
+        const before = line.slice(0, m.index);
+        if (parenDepth(before, ranges)) continue;
+        const lead = before.replace(/\s+$/, "");
+        const tail = line.slice(m.index + m[0].length).replace(/^\s+/, "");
+        if (lead && !/\band$/i.test(lead)) continue;
+        if (tail && !/^and\b/i.test(tail)) continue;
+
+        const raw = m[3];
+        filters.push({
+            field: m[1],
+            value:
+                raw.startsWith('"') && raw.endsWith('"')
+                    ? raw.slice(1, -1)
+                    : raw,
+        });
+
+        // Take the `and` that joined it, so the rest still reads as a chain
+        let start = m.index;
+        let end = m.index + m[0].length;
+        const after = /^\s*and\b\s*/i.exec(line.slice(end));
+        if (after) end += after[0].length;
+        else {
+            const pre = /\s*\band\s*$/i.exec(line.slice(0, start));
+            if (pre) start -= pre[0].length;
+        }
+        cuts.push([start, end]);
+    }
+    if (!filters.length) return { line, filters };
+
+    let out = "";
+    let last = 0;
+    for (const [a, b] of cuts) {
+        out += line.slice(last, a);
+        last = b;
+    }
+    return { line: (out + line.slice(last)).replace(/\s+/g, " ").trim(), filters };
+}
 
 // Character ranges covered by "strings" and /regex/ literals — a shorthand
 // operator inside one of those is just text, e.g. msg:"a=b".
@@ -1864,10 +2139,13 @@ function compileQuerySugar(q) {
     SUGAR_RE.lastIndex = 0;
     while ((m = SUGAR_RE.exec(q))) {
         if (ranges.some(([a, b]) => m.index > a && m.index < b)) continue;
-        const [full, field, , raw] = m;
+        const [full, field, op, raw] = m;
         const val =
             raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw;
-        out += q.slice(last, m.index) + `${field}:"${val}"`;
+        const value =
+            (op === "=~" && containsValue(`"${val}"`, val)) || `"${val}"`;
+        const name = op === "=~" ? containsField(field) : field;
+        out += q.slice(last, m.index) + `${name}:${value}`;
         last = m.index + full.length;
     }
     return out + q.slice(last);
@@ -1923,7 +2201,9 @@ function groupAtoms(s) {
 const GROUP_INFIX = /^(?:and|or)$/i;
 const GROUP_PREFIX = /^(?:not|[!+-])$/i;
 
-function orGroupValues(inner) {
+// `mapValue` rewrites the plain values — the booleans, the prefixes and a
+// nested group are passed on as they are.
+function orGroupValues(inner, mapValue = (v) => v) {
     const atoms = groupAtoms(inner);
     if (!atoms.length) return inner;
 
@@ -1931,16 +2211,19 @@ function orGroupValues(inner) {
     let prevWasValue = false;
     for (const atom of atoms) {
         const infix = GROUP_INFIX.test(atom);
+        const isValue =
+            !infix && !GROUP_PREFIX.test(atom) && !atom.startsWith("(");
         if (out) out += prevWasValue && !infix ? " OR " : " ";
-        out += atom;
+        out += isValue ? mapValue(atom) : atom;
         prevWasValue = !infix && !GROUP_PREFIX.test(atom);
     }
     return out;
 }
 
-// A group may be reached by any of the three operators — field:(…), field=(…)
-// and field=~(…) all mean the same list, and all compile to field:(…).
-const GROUP_HEAD_RE = /([A-Za-z_@][\w.@-]*)\s*(?::|=~|=)\s*\(/g;
+// A group may be reached by any of the three operators, and all compile to
+// field:(…) — field:(…) and field=(…) as a list of whole values, field=~(…) as
+// a list of contains values: f=~("a-b-c-d") → f:(("a-b-c-d" or "b-c-d")).
+const GROUP_HEAD_RE = /([A-Za-z_@][\w.@-]*)\s*(:|=~|=)\s*\(/g;
 
 function expandValueGroups(q) {
     const ranges = protectedRanges(q);
@@ -1953,9 +2236,20 @@ function expandValueGroups(q) {
         const open = m.index + m[0].length - 1;
         const close = matchingParen(q, open);
         if (close === -1) continue;
+        const mapValue =
+            m[2] === "=~"
+                ? (a) =>
+                      containsValue(
+                          a,
+                          a.startsWith('"') && a.endsWith('"')
+                              ? a.slice(1, -1)
+                              : a,
+                      ) ?? a
+                : undefined;
+        const name = m[2] === "=~" ? containsField(m[1]) : m[1];
         out +=
             q.slice(last, m.index) +
-            `${m[1]}:(${orGroupValues(q.slice(open + 1, close))})`;
+            `${name}:(${orGroupValues(q.slice(open + 1, close), mapValue)})`;
         last = close + 1;
         GROUP_HEAD_RE.lastIndex = last;
     }
@@ -2096,8 +2390,10 @@ function upperBooleans(q) {
 // quietly matches nothing rather than failing.
 //
 // The lookbehind is what keeps hyphenated values whole — the `-` in
-// `dgl-dr-workflow` follows a word character, a prefix `-` never does.
-const PREFIX_OP_RE = /(?<![\w"])([!+-])\s*(?=[\w"(])/g;
+// `dgl-dr-workflow` follows a word character, a prefix `-` never does. It has
+// to count a Thai or accented letter as one too (`ลูกค้า-id`), and a `*`, or the
+// wildcard `=~` sends unquoted comes back out as `*ลูกค้าNOT id*`.
+const PREFIX_OP_RE = /(?<![\p{L}\p{M}\p{N}_"*])([!+-])\s*(?=[\w"(])/gu;
 
 function expandPrefixOps(q) {
     const ranges = protectedRanges(q);
@@ -2316,14 +2612,43 @@ function pushQueryToBar(input, clean) {
     setTimeout(() => editorTA?.focus(), 800); // keep typing where you were
 }
 
+// How many pills of ours the last run left up, so a later run can take them off
+let containsPills = 0;
+
 async function runEditorQuery() {
     if (!editorTA) return;
     const src = editorTA.value;
-    const clean = compileQuery(src);
     const input = queryBarEl();
     if (!input) return lfToast("Query bar not found — is this the Discover page?");
 
     saveQuerySource(src);
+
+    // A `=~` clause reaches further as a filter pill than DQL can take it. The
+    // pills go in first — a filter change is a React state change, so the query
+    // submit right after runs against the new filter list. A run with no `=~`
+    // left still sends an empty list while one of ours is up, which is how it
+    // comes off again: our pills always mirror the last run's `=~` clauses.
+    const lifted = extractContains(stripQueryComments(src));
+    if (lifted.filters.length || containsPills) {
+        const n = lifted.filters.length;
+        const ok = await applyContainsFilters(
+            lifted.filters.map((f) => containsFilter(f.field, f.value)),
+        );
+        if (ok) {
+            containsPills = n;
+            await ensureDqlLanguage();
+            pushQueryToBar(input, compileQuery(lifted.line));
+            return lfToast(
+                n
+                    ? `Ran query · ${n} contains filter${n > 1 ? "s" : ""} as query DSL`
+                    : "Ran query · contains filter removed",
+            );
+        }
+        // Discover's filter list was not reachable — run it all as DQL instead
+        lfToast("Filter bar not reachable — running =~ as DQL", 4000);
+    }
+
+    const clean = compileQuery(src);
     await ensureDqlLanguage();
     pushQueryToBar(input, clean);
 
@@ -2751,7 +3076,7 @@ function buildEditor() {
         el(
             "span",
             "flex:1;",
-            '⌘↵ run · ⌘/ comment · ⌥⇧F format · ⌥↓ copy line · f="v" → f:"v" · f=~"v" → f:"v" (DQL) · comments: -- // #',
+            '⌘↵ run · ⌘/ comment · ⌥⇧F format · ⌥↓ copy line · f="v" → f:"v" · f=~"v" → contains pill · comments: -- // #',
         ),
     );
     foot.appendChild(el("span", "letter-spacing:2px;", "⋯"));
