@@ -1953,15 +1953,13 @@ function containsShoulds(field, inner) {
     // The value as written. multi_match of type `phrase` over one field is
     // match_phrase — the form the query bar itself sends for a quoted DQL
     // value — but it takes a field pattern and `lenient`, which match_phrase
-    // cannot.
-    const phrase = (v) => ({
-        multi_match: { type: "phrase", query: v, fields, lenient: true },
-    });
-    const should = [phrase(inner)];
-    const parts = inner.split(VALUE_SEP_RE).filter(Boolean);
-    // An analysed field, where the fragment starts mid-token
-    if (parts.length - 1 >= CONTAINS_MIN_PARTS)
-        should.push(phrase(inner.replace(FIRST_PART_RE, "")));
+    // cannot. The wildcards below do not make this redundant: on an analysed
+    // field a wildcard matches inside one token, so a value with a space in
+    // it ("document borrower info", three tokens) is reachable only as a
+    // phrase.
+    const should = [
+        { multi_match: { type: "phrase", query: inner, fields, lenient: true } },
+    ];
     // A whole-value field (keyword, flat_object), where only a wildcard
     // reaches inside the value. The term-level `wildcard` is the one the KTB
     // cluster's json_payload answers — it is a different code path from

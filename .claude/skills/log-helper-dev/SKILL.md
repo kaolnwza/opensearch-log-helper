@@ -68,9 +68,16 @@ wildcards "in both search terms and field names" but *never inside a quoted
 phrase*. **So `=~` leaves DQL.** `extractContains()` lifts every `=~` clause
 sitting on the top level of an AND chain out of the query line, and
 `containsFilter()` sends it as a filter carrying raw query DSL — one
-`bool.should` per mapping (whole value · phrase from the second part on ·
-term-level `wildcard` · `query_string: *value*` over the subtree), which is
-what the bar's own *Edit as Query DSL* writes by hand.
+`bool.should` per mapping (whole value as a phrase · term-level `wildcard` ·
+`query_string: *value*` over the subtree), which is what the bar's own *Edit as
+Query DSL* writes by hand. The phrase is not made redundant by the wildcards: a
+wildcard matches *within* one token, so a value with a space in it is reachable
+only as a phrase. A fourth `should` — the phrase minus its first part, for a
+fragment starting mid-token — was dropped once the term-level wildcard was
+known to work: it only ever helped on analysed text, and it over-matches, since
+dropping the first part also matches documents that do not contain it. It
+survives in `containsValue()`, where the DQL fallback has no term-level
+wildcard to lean on.
 
 **The two wildcards are not the same query.** `query_string`'s goes through the
 field's analyser (`analyze_wildcard`) and finds nothing on the KTB cluster's

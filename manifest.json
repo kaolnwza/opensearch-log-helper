@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OpenSearch Log Filter Helper",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "An in-page DQL query editor and inline json_payload field extractor for OpenSearch Dashboards",
   "permissions": ["activeTab", "scripting", "storage"],
   "action": {

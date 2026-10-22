@@ -53,20 +53,18 @@ friendlier syntax and translates it:
 field's own mapping (keyword vs text), so `kubernetes.container_name="x"` has to
 match that whole keyword and `json_payload="x"` that whole phrase.
 
-`=~` means **contains**, and it asks for the value two ways at once. A quoted
-value alone cannot find a fragment of an analysed field: the phrase has to line
-up with the analyser's tokens, and the standard analyser cuts at `-` but not at
-`_`. A payload holding
+`=~` means **contains**, and the shape of the field decides what can express
+it. A quoted value is a *phrase*, which has to line up with the analyser's
+tokens, so on an analysed field it cannot start in the middle of one: a payload
+holding
 
 ```
-"wf_traceparent": "01a10f52-…-9ef2eebff491_90963507-9cbc-…"
+"wf_traceparent": "01a1572b-…-97a2ba292d92_063b813d-dd59-…"
 ```
 
-indexes `9ef2eebff491_90963507` as a single token, so the whole value matches as
-a phrase while `json_payload="90963507-9cbc-…"` opens on a token no document has
-— the fragment starts in the middle of one. Dropping its first part lines the
-rest of the phrase back up with the document's tokens, which is the second
-spelling `=~` sends.
+indexes `97a2ba292d92_063b813d` as one token (the standard analyser cuts at `-`
+but not at `_`), so the whole value matches as a phrase while
+`json_payload="063b813d-dd59-…"` opens on a token no document has.
 
 A **whole-value** field has no tokens to line up with in the first place: a
 `keyword`, or the `flat_object` that stores a `json_payload` as one string per
@@ -95,8 +93,6 @@ where none of DQL's rules apply:
 { "bool": { "minimum_should_match": 1, "should": [
   { "multi_match":  { "type": "phrase", "query": "90963507-9cbc-4683-8832-7a91ce1219ad",
                       "fields": ["json_payload", "json_payload.*"], "lenient": true } },
-  { "multi_match":  { "type": "phrase", "query": "9cbc-4683-8832-7a91ce1219ad",
-                      "fields": ["json_payload", "json_payload.*"], "lenient": true } },
   { "wildcard":     { "json_payload": { "value": "*063b813d-dd59-…*",
                                         "case_insensitive": true } } },
   { "query_string": { "fields": ["json_payload", "json_payload.*"],
@@ -105,11 +101,14 @@ where none of DQL's rules apply:
 ]}}
 ```
 
-One `should` per mapping: the whole value, the phrase from its second part on
-(an analysed field, where the fragment starts mid-token — the standard analyser
-cuts at `-` but not at `_`, so `…97a2ba292d92_063b813d-dd59…` holds no token
-`063b813d`), and two wildcards for a whole-value field. Whichever the mapping
-answers, the fragment is found.
+One `should` per mapping: the whole value as a phrase, and two wildcards for a
+whole-value field. Whichever the mapping answers, the fragment is found.
+
+Why keep the phrase when a wildcard is more general? Because on an **analysed**
+field a wildcard matches inside a single token, and never across two: the
+analyser stored `document borrower info` as three tokens, so
+`*document borrower info*` matches nothing there while the phrase matches. Any
+`=~` value with a space in it needs the phrase clause.
 
 The **term-level `wildcard`** is the one this cluster's `json_payload` answers,
 and it is there because `query_string`'s wildcard is not the same query: that
