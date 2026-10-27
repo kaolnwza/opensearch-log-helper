@@ -1,5 +1,14 @@
 const $ = (id) => document.getElementById(id);
 
+// ── Version ────────────────────────────────────────────────────────────────
+// Straight from the manifest, so the badge cannot drift from what is loaded —
+// which is the whole point of showing it: after a reload at chrome://extensions
+// it says whether the new build is the one running.
+try {
+  const v = chrome?.runtime?.getManifest?.().version;
+  if (v) document.getElementById("version").textContent = `v${v}`;
+} catch {}
+
 // ── Status ─────────────────────────────────────────────────────────────────
 function showStatus(msg, type = "success") {
   const el = $("status");
@@ -180,18 +189,6 @@ sendToContent("filterBar").then((res) => {
   else $("chk-filter-bar").disabled = true;
 });
 
-// ── Pin / pop-out ──────────────────────────────────────────────────────────
-$("btn-pin").addEventListener("click", () => {
-  if (typeof chrome !== "undefined" && chrome.windows) {
-    chrome.windows.create({
-      url: chrome.runtime.getURL("popup.html"),
-      type: "popup", width: 360, height: 720, focused: true,
-    });
-  } else {
-    window.open(location.href, "_blank", "width=360,height=720");
-  }
-});
-
 // ── Extractor presets ─────────────────────────────────────────────────────
 const EXTRACT_PRESETS = {
   dev: ["coalesce(time, timestamp)", "level", "coalesce(msg, message)", "loan_app_id", "trace_id", "span_id", "request_header.Wf-traceparent"],
@@ -334,7 +331,12 @@ function renderPresetOptions() {
 function renderValueFieldOptions() {
   const preset = activePreset();
   const fields = [...new Set([...preset.fields, ...Object.keys(preset.values)])];
-  if (!fields.includes(valueField)) valueField = fields[0] || "";
+  // Land on a field that has values to show. The first field is usually a
+  // parent path with none of its own ("kubernetes"), and an empty box reads
+  // as if the preset were empty.
+  if (!fields.includes(valueField))
+    valueField =
+      fields.find((f) => (preset.values[f] || []).length) || fields[0] || "";
 
   fillSelect($("suggest-value-field"), fields.map((f) => [f, f]), valueField);
   $("suggest-value-field").disabled = !fields.length;
@@ -426,6 +428,90 @@ $("btn-suggest-del").addEventListener("click", () => {
   saveSuggestStore();
   renderSuggestUI();
   showStatus(`Deleted preset: ${gone}`);
+});
+
+// ── Value lists as .txt ───────────────────────────────────────────────────
+// A value list is long (70-odd container names) and comes from somewhere else
+// — another squad's list, a kubectl output, a wiki page. One value per line is
+// what all of those already are, so that is the exchange format.
+//
+// An import *replaces* the list: the file is the list, so what it leaves out
+// is meant to be gone. Export first if the current one is worth keeping — and
+// ↺ always brings the built-in list back.
+const VALUES_MAX = 5000;
+
+const currentValues = () => (activePreset().values[valueField] || []).slice();
+
+$("btn-values-export").addEventListener("click", () => {
+  const values = currentValues();
+  if (!values.length) return showStatus("Nothing to export", "error");
+  // The field path makes a readable file name, and a safe one bar the dots
+  const name = `${valueField.replace(/[^\w.@-]+/g, "_")}.txt`;
+  const url = URL.createObjectURL(
+    new Blob([values.join("\n") + "\n"], { type: "text/plain" }),
+  );
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  // The click is synchronous, but the download reads the blob after it
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  showStatus(`${values.length} value${values.length > 1 ? "s" : ""} → ${name} ✓`);
+});
+
+$("btn-values-import").addEventListener("click", () => {
+  if (!valueField) return showStatus("Add a field first", "error");
+  $("file-values").click();
+});
+
+// A line per value — or several, since these lists are as likely to arrive in
+// columns (a terminal's `kubectl get deploy`, a pasted wiki table) as one per
+// line. A tab or a run of two or more spaces is a column gap; a single space
+// is part of the value, because other fields hold values with spaces in them
+// ("document borrower info"). Blank lines and `#` comments are skipped, so a
+// list can be annotated and still re-imported, and anything the file says
+// beyond that is taken as text — never markup, never a field name.
+function parseValueFile(text) {
+  return [
+    ...new Set(
+      text
+        .split(/\r?\n/)
+        .filter((line) => !line.trim().startsWith("#"))
+        .flatMap((line) => line.split(/\t+| {2,}/))
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+$("file-values").addEventListener("change", async (e) => {
+  const file = e.target.files?.[0];
+  // Let the same file be picked twice in a row
+  e.target.value = "";
+  if (!file || !valueField) return;
+
+  let incoming;
+  try {
+    incoming = parseValueFile(await file.text());
+  } catch {
+    return showStatus("Could not read that file", "error");
+  }
+  if (!incoming.length) return showStatus("No values in that file", "error");
+
+  const before = currentValues().length;
+  const over = incoming.length > VALUES_MAX;
+  const kept = over ? incoming.slice(0, VALUES_MAX) : incoming;
+
+  activePreset().values[valueField] = kept;
+  saveSuggestStore();
+  renderValueFieldOptions();
+
+  showStatus(
+    over
+      ? `Replaced — stopped at ${VALUES_MAX} of ${incoming.length}`
+      : `${valueField}: ${before} → ${kept.length} value${kept.length > 1 ? "s" : ""} ✓`,
+    over ? "error" : "success",
+  );
 });
 
 // Puts the shipped preset back — edited or deleted, it can always be recovered

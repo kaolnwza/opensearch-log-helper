@@ -71,21 +71,6 @@ body {
   border-bottom: 1px solid var(--surface);
 }
 
-.btn-pin {
-  margin-left: auto;
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  color: var(--accent);
-  font-size: 14px;
-  padding: 3px 7px;
-  cursor: pointer;
-  line-height: 1;
-  transition: background 0.15s;
-}
-.btn-pin:hover { background: var(--surface); }
-.btn-pin.pinned { color: var(--accent-strong); border-color: var(--accent-strong); }
-
 .theme-select {
   margin-left: auto;
   background: var(--surface);
@@ -168,6 +153,20 @@ h1 {
   letter-spacing: 0.3px;
 }
 
+/* Sits next to the title; the theme select after it keeps its margin-left:auto,
+   so it stays beside the name rather than drifting to the middle. */
+.version {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--sub);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
 .section {
   padding: 12px 14px;
 }
@@ -242,6 +241,10 @@ h1 {
 
 .select {
   flex: 1;
+  /* A select is as wide as its longest option unless it is told it may be
+     narrower — "kubernetes.container_name" pushed the buttons beside it off
+     the popup's 320px. */
+  min-width: 0;
   padding: 5px 6px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -323,8 +326,20 @@ h1 {
   border-radius: 5px;
   cursor: text;
   min-height: 36px;
+  /* A preset's value list runs to scores of entries — about five rows of
+     chips, then it scrolls, so the popup keeps its shape. The text input is
+     the last child, and focusing it scrolls it back into view. */
+  max-height: 148px;
+  overflow-y: auto;
   transition: border-color 0.15s;
 }
+
+.tag-box::-webkit-scrollbar { width: 8px; }
+.tag-box::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+.tag-box::-webkit-scrollbar-thumb:hover { background: var(--faint); }
 
 .tag-box:focus-within {
   border-color: var(--accent-strong);

@@ -11,11 +11,11 @@
   <div class="header">
     <span class="logo">🔍</span>
     <h1>Log Filter Helper</h1>
+    <span id="version" class="version" title="Installed version"></span>
     <select id="theme-select" class="theme-select" title="Color theme">
       <option value="light">☀ White</option>
       <option value="dark">🌙 Dark</option>
     </select>
-    <button id="btn-pin" class="btn-pin" title="Pop out as floating window">📌</button>
   </div>
 
   <!-- GitHub -->
@@ -110,6 +110,11 @@
     <div class="row mt8">
       <span class="sub-label" style="margin:0;white-space:nowrap;">Values for</span>
       <select id="suggest-value-field" class="select" title="Field whose values you are editing"></select>
+      <button id="btn-values-import" class="btn btn-secondary btn-mini"
+        title="Import a .txt file — one value per line. It replaces this list.">↑ txt</button>
+      <button id="btn-values-export" class="btn btn-secondary btn-mini"
+        title="Save this list as a .txt file, one value per line">↓ txt</button>
+      <input id="file-values" type="file" accept=".txt,text/plain" class="hidden" />
     </div>
     <div id="suggest-value-box" class="tag-box mt4">
       <input id="input-suggest-value" type="text" class="tag-input" placeholder="e.g. core-application-decision"

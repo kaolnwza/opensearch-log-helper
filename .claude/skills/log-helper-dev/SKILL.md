@@ -17,7 +17,7 @@ at `chrome://extensions`.
 | `interceptor.js` | MAIN, `document_start` | Patches `fetch`/XHR and `history.pushState`. Broadcasts `__LF_HITS__` (parsed `json_payload` per row), `__LF_NAV__` (query/time/nav change) and `__LF_SEARCH_ERR__` (the reason behind OpenSearch's blank "Error" toast — including a shard failure, which arrives inside a `200` with no hits and is otherwise indistinguishable from "nothing matched"; every `_msearch` response is checked, not just the first). Also owns the filter list: on `__LF_SET_FILTERS__` it walks React's fibers to the search bar's props and calls `filterManager.setFilters` / `onFiltersUpdated`, answering `__LF_FILTERS__` — props are page objects, so only this world can reach them. |
 | `suggest-presets.js` | isolated + popup | Autocomplete presets: the built-in field/value lists and `lfNormalizeStore()`. Loaded **before** `content.js` (and by `popup.html`) — both read its globals at load, so anything evaluating `content.js` must evaluate this first. |
 | `content.js` | isolated, `document_idle` | Everything on the page: query editor, extractor overlays, `⌗ Fields` panel, chart/filter-bar controls. ~2900 lines, sectioned by `// ── Title ──` banners. |
-| `popup.js/html/css` | popup | Container / payload filters, the extractor's field list, and the suggestion-preset manager. Talks to `content.js` over `chrome.runtime.sendMessage`. |
+| `popup.js/html/css` | popup | Container / payload filters, the extractor's field list, and the suggestion-preset manager — including the `.txt` exchange for one field's value list (one value per line; an import replaces the list, skips blanks and `#` comments, and is refused outright if nothing usable is in the file). Talks to `content.js` over `chrome.runtime.sendMessage`. |
 
 Shared state lives in `chrome.storage.local` (`extractFields`, `extractAuto`,
 `theme`, `suggestPresets`) so the popup and the in-page panel stay in sync;
@@ -66,7 +66,14 @@ whole phrase.
 makes a phrase, which has to line up with the analyser's tokens, and DQL takes
 wildcards "in both search terms and field names" but *never inside a quoted
 phrase*. **So `=~` leaves DQL.** `extractContains()` lifts every `=~` clause
-sitting on the top level of an AND chain out of the query line, and
+sitting on the top level of an AND chain out of the query line — each clause
+taking exactly one adjacent `and` with it so the rest still reads as a chain,
+and never one that the clause before it already took (`taken`): with two
+clauses in a row, the `and` between them belongs to whichever reaches it
+first, and the other has to take the one on its far side. Both halves of that
+rule were bugs in turn, one leaving `… AND` at the end of the line, the other
+`AND …` at the start. The cut ranges must also stay in order, since a range
+that reads backwards slices to `""` and swallows the rest of the line. Then
 `containsFilter()` sends it as a filter carrying raw query DSL — one
 `bool.should` per mapping (whole value as a phrase · term-level `wildcard` ·
 `query_string: *value*` over the subtree), which is what the bar's own *Edit as
@@ -174,6 +181,12 @@ OpenSearch re-renders the sidebar open while results load, so clicking it shut
 produced a flicker loop. If a feature has to re-apply itself repeatedly against
 the page's own state, cap the attempts or drop the feature.
 
+**The "Add filter" strip stays visible by default.** `filterBarHidden` used
+to default to true, from when everything went through the query string — but a
+`=~` clause is now drawn as a pill in that strip, and hiding it hides what the
+query is doing. The stored value is read as `=== "1"` so that only an explicit
+choice hides it, and an older explicit choice is still honoured.
+
 **Colours come from the theme.** `T()` returns the active palette (`THEMES.light`
 / `.dark`); never hard-code a hex. Adding a colour means adding a key to both
 themes.
@@ -185,14 +198,25 @@ on `e.code === "KeyF"` because ⌥⇧F is a dead key on a Mac layout.
 ## Verifying a change
 
 There is no test runner. Run the extension against a fake Discover page in
-jsdom — this catches ordering, event and DOM-shape bugs in seconds:
+jsdom — this catches ordering, event and DOM-shape bugs in seconds. The checks
+live in `checks/` **in this skill folder**, not in a scratch directory: a
+scratchpad is reaped between sessions, and these are the only tests the repo
+has. `harness.js` beside them is the bare template for a new one.
 
 ```bash
-cd <scratchpad> && npm i jsdom
-node smoke.js   # see harness.js in this skill folder for the template
+npm i jsdom --prefix /tmp/lf-jsdom          # once; nothing is installed in the repo
+cd .claude/skills/log-helper-dev/checks
+for f in *.js; do NODE_PATH=/tmp/lf-jsdom/node_modules node $f; done
 ```
 
-Copy `harness.js` from this skill directory as the starting point. Gotchas that
+| check | covers |
+|---|---|
+| `filters.js` | the contains pill: the DSL handed to Discover's filter list, what is left for the query bar, a pill coming off again, the `and` accounting when clauses are lifted, and the search-error toast. Loads **both** worlds. |
+| `smoke.js` | the DQL side of the pipeline — what the editor compiles and pushes to the bar, 14 cases. No `interceptor.js`, so `=~` takes its DQL fallback. |
+| `fbcheck.js` | the "Add filter" strip's default, and that a stored choice is honoured. |
+| `popup-values.js` | the popup's value editor: the field it opens on, and the `.txt` import/export. |
+
+Every one of them ends in `all cases pass` and `page errors: []`. Gotchas that
 will otherwise waste time:
 
 - **jsdom's `postMessage` leaves `event.source` null**, and `content.js` checks
@@ -228,15 +252,18 @@ middle of the next assertion. A harness without `interceptor.js` exercises the
 DQL fallback instead, which is what `smoke.js` is for — so a change here needs
 *both* runs.
 
-The popup takes the same treatment: load `popup.html` into jsdom (no
-`runScripts`, so its `<script src>` tags stay inert), `window.eval`
-`suggest-presets.js` then `popup.js`, and drive it with real click / keydown
-events. Note the storage stub keeps live object references where Chrome would
+The popup takes the same treatment: load `popup.html` into jsdom with
+`runScripts: "outside-only"` — which leaves its own `<script src>` tags inert
+but is still **required**, since without it `window.eval` is Node's eval and
+has no `document` — then `window.eval` `suggest-presets.js` and `popup.js` in
+that order, and drive it with real click / keydown events. To assert on a
+download, stub `URL.createObjectURL` and `HTMLElement.prototype.click`, and
+stand in a `Blob` that keeps its parts: jsdom's own has no `.text()`. Note the storage stub keeps live object references where Chrome would
 serialise — hold on to the object you want to assert about, not its id.
 
 Assert on observable behaviour — what got pushed to the query bar, which DOM
 node was inserted, how many clicks were dispatched — not on internals, which
 `window.eval` cannot reach anyway (top-level `let` is not on `window`).
 
-Always finish with a sweep of the existing harness files; several fixes here
-regressed an earlier one.
+Always finish with a sweep of all four; several fixes here regressed an
+earlier one, and two were caught only by a case added for a different bug.

@@ -2071,6 +2071,9 @@ function extractContains(line) {
     const ranges = protectedRanges(line);
     const cuts = [];
     const filters = [];
+    // How far the cuts reach so far: an `and` before this clause is only ours
+    // to take if the clause before it did not already take it.
+    let taken = 0;
     let m;
     SUGAR_RE.lastIndex = 0;
     while ((m = SUGAR_RE.exec(line))) {
@@ -2092,15 +2095,21 @@ function extractContains(line) {
                     : raw,
         });
 
-        // Take the `and` that joined it, so the rest still reads as a chain
+        // Take the `and` that joined the clause to the chain, so what is left
+        // still reads as one. Each lifted clause has to take exactly one, and
+        // no `and` can be taken twice — with two clauses in a row, the `and`
+        // between them belongs to whichever reaches it first, and the other
+        // must take the one on its far side. Getting that wrong leaves the
+        // line dangling on an `AND` at one end or the other.
         let start = m.index;
         let end = m.index + m[0].length;
-        const after = /^\s*and\b\s*/i.exec(line.slice(end));
-        if (after) end += after[0].length;
+        const pre = /\s*\band\s*$/i.exec(line.slice(0, start));
+        if (pre && start - pre[0].length >= taken) start -= pre[0].length;
         else {
-            const pre = /\s*\band\s*$/i.exec(line.slice(0, start));
-            if (pre) start -= pre[0].length;
+            const after = /^\s*and\b\s*/i.exec(line.slice(end));
+            if (after) end += after[0].length;
         }
+        taken = end;
         cuts.push([start, end]);
     }
     if (!filters.length) return { line, filters };
@@ -2108,8 +2117,11 @@ function extractContains(line) {
     let out = "";
     let last = 0;
     for (const [a, b] of cuts) {
-        out += line.slice(last, a);
-        last = b;
+        // `taken` keeps the cuts from overlapping; this is the guard for if
+        // it ever stops doing so, since a range that reads backwards slices
+        // to "" and silently swallows the rest of the line.
+        out += line.slice(last, Math.max(a, last));
+        last = Math.max(b, last);
     }
     return { line: (out + line.slice(last)).replace(/\s+/g, " ").trim(), filters };
 }
@@ -3189,8 +3201,11 @@ function applyChartHidden(chart) {
 }
 
 // ── Filter bar ────────────────────────────────────────────────────────────────
-// The "▽ ⊕ Add filter" strip — everything this extension does goes through the
-// query string, so it is hidden by default (panel checkbox brings it back).
+// The "▽ ⊕ Add filter" strip. It used to be hidden by default, back when
+// everything here went through the query string — but a `=~` clause now runs
+// as a filter pill, and the pill is drawn in this strip, so hiding it hides
+// what the query is doing. Shown by default; the checkbox still hides it, and
+// an explicit choice already stored is kept.
 const CHROME_STYLE_ID = "lf-chrome-style";
 const FILTER_BAR_KEY = "lf_filterbar_hidden";
 const FILTER_BAR_CHK_ID = "lf-filterbar-chk";
@@ -3202,9 +3217,9 @@ function syncPanelFilterBarCheck() {
     if (cb) cb.checked = filterBarHidden;
 }
 
-let filterBarHidden = true;
+let filterBarHidden = false;
 try {
-    filterBarHidden = localStorage.getItem(FILTER_BAR_KEY) !== "0";
+    filterBarHidden = localStorage.getItem(FILTER_BAR_KEY) === "1";
 } catch {}
 
 function applyFilterBarHidden() {

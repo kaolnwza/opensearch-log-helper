@@ -201,14 +201,26 @@ Autocomplete is preset-driven — see *Editor suggestion presets* below.
   offered after an operator. New / rename / duplicate / delete from the popup,
   plus a ↺ button that restores the built-in preset. Values found in the loaded
   logs are suggested on top of the preset's own list.
+    - **Value lists as .txt** — *Values for* picks the field (it opens on the
+      one that has values, normally `kubernetes.container_name`) and the two
+      buttons beside it import (`↑ txt`) or export (`↓ txt`) that list, **one
+      value per line**. That is the shape a container list already arrives in,
+      whether from `kubectl get deploy`, another squad's list or a wiki page.
+      An import **replaces** the list — the file is the list, so what it
+      leaves out is meant to be gone; export first if the current one is worth
+      keeping, and ↺ always brings the built-in list back. Columns count
+      too — a tab or a run of two or more spaces is a gap, since these lists
+      come out of a terminal as often as one per line, while a single space
+      stays inside the value. Duplicates collapse, blank lines and `#`
+      comments are skipped so an exported list can be annotated and imported
+      back, and a file with nothing usable in it is refused rather than
+      applied.
 - **Hide/Show columns** — hide the raw Time / container_name / json_payload
   columns so only the overlay shows
 - **Page chrome** — whole-page dark mode, and a toggle for OpenSearch's own
-  "▽ ⊕ Add filter" strip (hidden by default, since everything here goes through
-  the query string)
+  "▽ ⊕ Add filter" strip (shown by default — a `=~` clause runs as a filter
+  pill, and the pill is drawn there)
 - **Themes** — Dracula Dark / White, applied to the popup and the in-page UI together
-- **Pop-out window** — pin the popup as a floating window so it stays open while
-  you click around OpenSearch
 
 The `⌗ Fields` button in the bottom-right corner opens the same controls in the
 page itself, so you can pick fields straight out of the logs.
